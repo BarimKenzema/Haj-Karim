@@ -1,8 +1,1 @@
-telethon
 Requests
-beautifulsoup4
-jdatetime
-pycountry_convert
-tldextract
-geoip2
-dnspython
