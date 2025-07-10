@@ -1,5 +1,0 @@
-hy2
-ss
-trojan
-vless
-vmess
