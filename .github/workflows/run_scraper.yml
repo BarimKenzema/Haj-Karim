@@ -2,21 +2,15 @@ name: Run V2Ray Collector
 
 on:
   schedule:
-    # --- THIS IS THE KEY CHANGE ---
-    # This runs automatically at the top of every 4th hour
-    - cron: '0 */4 * * *'
-  # This allows you to run it manually from the "Actions" tab on GitHub
+    - cron: '0 */4 * * *' # Changed to 4 hours to reduce race conditions
   workflow_dispatch:
 
 jobs:
   build:
-    # This gives the job the necessary permissions to push back to the repo
-    permissions:
-      contents: write
     runs-on: ubuntu-latest
 
     steps:
-      - name: Check out repository code
+      - name: Check out repository
         uses: actions/checkout@v4
 
       - name: Set up Python
@@ -30,15 +24,21 @@ jobs:
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
 
       - name: Run Python script
-        # This securely passes your Telegram keys to the script
         env:
           TELEGRAM_API_ID: ${{ secrets.TELEGRAM_API_ID }}
           TELEGRAM_API_HASH: ${{ secrets.TELEGRAM_API_HASH }}
           TELETHON_SESSION: ${{ secrets.TELETHON_SESSION }}
         run: python main.py
 
-      - name: Commit and push updated files
-        # This action automatically detects and commits any new/changed files
-        uses: stefanzweifel/git-auto-commit-action@v5
-        with:
-          commit_message: "✅ Automated Config Update"
+      - name: Commit and Force Push changes
+        run: |
+          git config --global user.name "GitHub Actions Bot"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git add -A
+          # Check if there are changes. If so, commit and force push.
+          if ! git diff --staged --quiet; then
+            git commit -m "✅ Automated Config Update"
+            git push --force
+          else
+            echo "No changes to commit."
+          fi
