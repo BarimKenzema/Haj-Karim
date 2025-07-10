@@ -80,7 +80,7 @@ def ping_ip_address(ip, port):
 def check_modify_config(array_configuration, protocol_type, check_connection = True):
     print(f"--- title.py: check_modify_config START for {protocol_type} with {len(array_configuration)} configs ---")
     modified_array, tls_array, non_tls_array = [], [], []
-    tcp_array, ws_array, http_array, grpc_array = [], [], []
+    tcp_array, ws_array, http_array, grpc_array = [], [], [], []
 
     for i, element in enumerate(array_configuration):
         # print(f"Processing {protocol_type} config {i+1}/{len(array_configuration)}: {element[:60]}...")
