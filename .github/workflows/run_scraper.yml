@@ -3,8 +3,8 @@ name: Run V2Ray Collector
 on:
   schedule:
     # --- THIS IS THE KEY CHANGE ---
-    # This runs automatically at the top of every hour
-    - cron: '0 * * * *'
+    # This runs automatically at the top of every 4th hour
+    - cron: '0 */4 * * *'
   # This allows you to run it manually from the "Actions" tab on GitHub
   workflow_dispatch:
 
