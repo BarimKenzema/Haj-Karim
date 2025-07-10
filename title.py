@@ -18,6 +18,7 @@ def is_valid_ip_address(ip):
 
 def get_ips(node):
     try:
+        from dns import resolver, rdatatype # 
         if not node: return None
         # First, check if it's already an IP
         if is_valid_ip_address(node):
