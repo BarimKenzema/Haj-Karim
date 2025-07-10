@@ -1,5 +1,5 @@
-# FINAL HYBRID SCRIPT: Raw Collector + Full Categorization Processor
-import os, json, re, base64, traceback
+# FINAL HYBRID SCRIPT: Telethon Collector + Full Categorization Processor
+import os, json, re, base64, time, traceback
 from datetime import datetime, timezone, timedelta
 import requests
 import jdatetime
@@ -14,6 +14,11 @@ try:
 except ImportError as e:
     print(f"FATAL: 'title.py' is missing or has an error. It's required for this script. Error: {e}")
     exit(1)
+
+# --- Configuration (from GitHub Secrets) ---
+API_ID = os.environ.get('TELEGRAM_API_ID')
+API_HASH = os.environ.get('TELEGRAM_API_HASH')
+SESSION_STRING = os.environ.get('TELETHON_SESSION')
 
 # --- Helper Functions ---
 def setup_directories():
@@ -34,42 +39,65 @@ def json_load_safe(path):
         with open(path, 'r', encoding='utf-8') as f: return json.load(f)
     except: return []
 
+def get_last_update(path):
+    try:
+        with open(path, 'r') as f: return datetime.fromisoformat(f.read().strip())
+    except: return datetime.now(timezone.utc) - timedelta(days=7)
+
 def find_configs_raw(text):
     if not text: return []
     pattern = r'(?:vless|vmess|trojan|ss|hy2|hysteria|tuic|juicity)://[^\s<>"\'`]+'
     return re.findall(pattern, text, re.IGNORECASE)
 
 def main():
-    print("--- FULL CATEGORIZATION SCRIPT START ---")
+    print("--- FULL CATEGORIZATION SCRIPT (WITH CONNECTION CHECK) START ---")
     setup_directories()
     
-    # We will only use subscription links as they are the reliable source.
+    channels = json_load_safe('telegram channels.json')
     subs_links = json_load_safe('subscription links.json')
-    if not subs_links:
-        print("FATAL: 'subscription links.json' is empty or missing. No sources to scan.")
-        return
+    invalid_channels = set(json_load_safe('invalid telegram channels.json'))
+    last_update = get_last_update('last update')
+    current_update = datetime.now(timezone.utc)
 
     all_raw_configs = set()
+    print(f"\n--- Scanning {len(channels)} Telegram channels... ---")
+    try:
+        from telethon.sync import TelegramClient
+        from telethon.sessions import StringSession
+        with TelegramClient(StringSession(SESSION_STRING), int(API_ID), API_HASH) as client:
+            channels_to_scan = set(channels) - invalid_channels
+            for i, channel in enumerate(channels_to_scan):
+                try:
+                    print(f"Scanning @{channel} ({i+1}/{len(channels_to_scan)})...")
+                    for message in client.iter_messages(channel, limit=200):
+                        if message.date < last_update: break
+                        all_raw_configs.update(find_configs_raw(message.text))
+                    time.sleep(2)
+                except Exception as e:
+                    print(f"--> ERROR scanning @{channel}: {e}")
+                    invalid_channels.add(channel)
+    except Exception as e:
+        print(f"FATAL: Could not connect to Telegram: {e}")
+
     print(f"\n--- Fetching {len(subs_links)} subscription links... ---")
     for link in subs_links:
         try:
-            content = requests.get(link, timeout=20, headers={'User-Agent': 'Mozilla/5.0'}).text
-            try:
-                decoded_content = base64.b64decode(content).decode('utf-8', 'ignore')
-                all_raw_configs.update(find_configs_raw(decoded_content))
-            except Exception:
-                all_raw_configs.update(find_configs_raw(content))
+            content = requests.get(link, timeout=15).text
+            try: content = base64.b64decode(content).decode('utf-8')
+            except: pass
+            all_raw_configs.update(find_configs_raw(content))
         except Exception as e:
             print(f"--> ERROR fetching sub link {link}: {e}")
     
     final_configs_to_process = list(all_raw_configs)
     print(f"\n--- Found {len(final_configs_to_process)} total raw configs. Starting full processing... ---")
     if not final_configs_to_process:
-        print("INFO: No configs were collected. Exiting.")
+        print("INFO: No new configs found. Exiting.")
+        with open('last update', 'w') as f: f.write(current_update.isoformat())
         return
 
     # --- Part 2: DATA PROCESSING (Using your title.py logic) ---
-    print("\n--- Filtering and Titling Configurations (check_connection=False) ---")
+    print("\n--- Filtering and Titling Live Configurations ---")
     
     protocols = ["SHADOWSOCKS", "TROJAN", "VMESS", "VLESS", "REALITY", "TUIC", "HYSTERIA", "JUICITY"]
     processed = {p: [] for p in protocols}
@@ -80,7 +108,9 @@ def main():
         configs_for_proto = [c for c in final_configs_to_process if p.lower() in c.split('://')[0].lower()]
         if p == "HYSTERIA": configs_for_proto = [c for c in final_configs_to_process if c.startswith('hy')]
             
-        p_mod, p_tls, p_nontls, p_tcp, p_ws, p_http, p_grpc = check_modify_config(configs_for_proto, p, check_connection=False)
+        # --- THIS IS THE KEY CHANGE ---
+        # Set check_connection=True to filter for live servers
+        p_mod, p_tls, p_nontls, p_tcp, p_ws, p_http, p_grpc = check_modify_config(configs_for_proto, p, check_connection=True)
         
         processed[p].extend(p_mod)
         security['tls'].extend(p_tls)
@@ -90,7 +120,7 @@ def main():
         network['http'].extend(p_http)
         network['grpc'].extend(p_grpc)
 
-    # --- Part 3: FILE WRITING (Your original comprehensive file generation) ---
+    # Part 3: FILE WRITING
     print("\n--- Writing All Categorized Subscription Files ---")
     
     def write_subscription_file(filepath, configs, is_b64=True):
@@ -98,40 +128,33 @@ def main():
         content = "\n".join(config_sort(configs))
         if is_b64:
             content = base64.b64encode(content.encode("utf-8")).decode("utf-8")
-        with open(filepath, "w", encoding="utf-8") as f:
-            f.write(content)
+        with open(filepath, "w", encoding="utf-8") as f: f.write(content)
         print(f"SUCCESS: Wrote {len(configs)} configs to {filepath}")
 
-    # Write protocol files
     for p_name, p_configs in processed.items():
         write_subscription_file(f"./protocols/{p_name.lower()}", p_configs)
-
-    # Write security files
-    write_subscription_file("./security/tls", security['tls'])
-    write_subscription_file("./security/non-tls", security['non_tls'])
-
-    # Write network files
+    for sec_type, configs in security.items():
+        write_subscription_file(f"./security/{sec_type.replace('_','-')}", configs)
     for net_type, configs in network.items():
         write_subscription_file(f"./networks/{net_type}", configs)
-
-    # Combine all processed configs for country and other mixed files
+        
     all_processed_configs = []
     for p_configs in processed.values():
         all_processed_configs.extend(p_configs)
         
-    # Write country files
     country_dict = create_country(all_processed_configs)
     for country_code, configs in country_dict.items():
         write_subscription_file(f'./countries/{country_code}/mixed', configs)
         
-    # Write IPV4/IPV6 files
     ipv4_list, ipv6_list = create_internet_protocol(all_processed_configs)
     write_subscription_file('./layers/ipv4', ipv4_list)
     write_subscription_file('./layers/ipv6', ipv6_list)
     
-    # Write the main mixed file
     write_subscription_file('./splitted/mixed', all_processed_configs)
 
+    with open('invalid telegram channels.json', 'w') as f: json.dump(sorted(list(invalid_channels)), f, indent=4)
+    with open('last update', 'w') as f: f.write(current_update.isoformat())
+    
     print("\n--- SCRIPT FINISHED SUCCESSFULLY ---")
 
 if __name__ == "__main__":
