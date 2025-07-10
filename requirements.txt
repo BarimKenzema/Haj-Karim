@@ -1,8 +1,1 @@
-wget
-jdatetime
-requests
-tldextract
-beautifulsoup4
-geoip2
-dnspython
-pycountry_convert
+telethon
