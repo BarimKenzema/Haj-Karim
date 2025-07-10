@@ -1,4 +1,4 @@
-# FINAL HYBRID SCRIPT: Telethon Collector + Title.py Processor
+# FINAL HYBRID SCRIPT v2: Telethon Collector + Title.py Processor
 import os, json, re, base64, time, traceback
 from datetime import datetime, timezone, timedelta
 from telethon.sync import TelegramClient
@@ -26,13 +26,17 @@ SESSION_STRING = os.environ.get('TELETHON_SESSION')
 def setup_directories():
     dirs = [
         './splitted', './subscribe', './channels', './security', './protocols',
-        './networks', './layers', './countries',
-        './subscribe/protocols', './subscribe/networks', './subscribe/security',
-        './subscribe/layers', './channels/protocols', './channels/networks',
-        './channels/security', './channels/layers'
+        './networks', './layers', './countries'
     ]
+    # Create main directories
     for d in dirs:
         os.makedirs(d, exist_ok=True)
+    # Create subdirectories if they don't exist
+    for parent in ['subscribe', 'channels']:
+        for sub in ['protocols', 'networks', 'security', 'layers']:
+            os.makedirs(os.path.join(parent, sub), exist_ok=True)
+    print("INFO: All necessary directories are present.")
+
 
 def json_load_safe(path):
     try:
@@ -45,10 +49,15 @@ def get_last_update(path):
     except: return datetime.now(timezone.utc) - timedelta(days=7)
 
 def find_configs_raw(text):
+    """
+    CORRECTED: This function now correctly extracts the full config links.
+    """
     if not text: return []
-    pattern = r"(?i)(vless|vmess|trojan|ss|hy|hy2|tuic|juicity)://[^\s<>\"']+"
-    return re.findall(pattern, text)
+    # This regex finds any of the specified protocols followed by "://" and then any non-whitespace characters.
+    pattern = r'(vless|vmess|trojan|ss|hy2|hysteria|tuic|juicity)://[^\s<>"\'`]+'
+    return re.findall(pattern, text, re.IGNORECASE)
 
+# --- Main Script ---
 def main():
     print("--- HYBRID COLLECTOR/PROCESSOR START ---")
     if not all([API_ID, API_HASH, SESSION_STRING]):
@@ -64,7 +73,7 @@ def main():
 
     all_raw_configs = set()
 
-    # Part 1: DATA COLLECTION (Reliable Telethon method)
+    # Part 1: DATA COLLECTION
     print(f"\n--- Scanning {len(channels)} Telegram channels... ---")
     try:
         with TelegramClient(StringSession(SESSION_STRING), int(API_ID), API_HASH) as client:
@@ -75,7 +84,7 @@ def main():
                     for message in client.iter_messages(channel, limit=200):
                         if message.date < last_update: break
                         all_raw_configs.update(find_configs_raw(message.text))
-                    time.sleep(2) # Flood wait prevention
+                    time.sleep(2)
                 except Exception as e:
                     print(f"--> ERROR scanning @{channel}: {e}")
                     invalid_channels.add(channel)
@@ -99,40 +108,42 @@ def main():
         with open('last update', 'w') as f: f.write(current_update.isoformat())
         return
 
-    # Part 2: DATA PROCESSING (Your original title.py logic)
-    print("\n--- Filtering and Titling Live Configurations ---")
-    # This uses the check_modify_config function from your title.py
-    # We set check_connection=False to make it fast and reliable.
+    # Part 2: DATA PROCESSING
+    print("\n--- Filtering and Titling Live Configurations (check_connection=False) ---")
     
+    # Define categories
     protocols = ["SHADOWSOCKS", "TROJAN", "VMESS", "VLESS", "REALITY", "TUIC", "HYSTERIA", "JUICITY"]
-    processed = {}
+    processed = {p: [] for p in protocols}
     security = {'tls': [], 'non_tls': []}
     network = {'tcp': [], 'ws': [], 'grpc': [], 'http': []}
     
+    # Process all configs
     for p in protocols:
-        configs_for_proto = [c for c in final_configs_to_process if p.lower() in c.split('://')[0].lower()]
-        is_checkable = p not in ["TUIC", "HYSTERIA", "JUICITY"]
+        # Correctly filter configs for each protocol
+        if p == "HYSTERIA":
+             configs_for_proto = [c for c in final_configs_to_process if c.startswith('hy')]
+        else:
+             configs_for_proto = [c for c in final_configs_to_process if c.startswith(p.lower())]
         
         # We use check_connection=False for speed and reliability in the cloud
-        processed[p], tls, non_tls, tcp, ws, http, grpc = check_modify_config(configs_for_proto, p, check_connection=False)
+        p_mod, p_tls, p_nontls, p_tcp, p_ws, p_http, p_grpc = check_modify_config(configs_for_proto, p, check_connection=False)
         
-        security['tls'].extend(tls)
-        security['non_tls'].extend(non_tls)
-        network['tcp'].extend(tcp)
-        network['ws'].extend(ws)
-        network['grpc'].extend(http) # Note: your original script seemed to have a typo here
-        network['http'].extend(grpc)
+        processed[p].extend(p_mod)
+        security['tls'].extend(p_tls)
+        security['non_tls'].extend(p_nontls)
+        network['tcp'].extend(p_tcp)
+        network['ws'].extend(p_ws)
+        network['http'].extend(p_http)
+        network['grpc'].extend(p_grpc)
 
-    # Part 3: FILE WRITING (Your original file generation logic)
+    # Part 3: FILE WRITING
     print("\n--- Writing All Categorized Subscription Files ---")
     
     def write_subscription_file(filepath, configs, is_b64=True):
-        if not configs:
-            # Create empty file to prevent 404
-            with open(filepath, "w") as f: f.write("")
-            return
+        # Create parent directory if it doesn't exist
+        os.makedirs(os.path.dirname(filepath), exist_ok=True)
         
-        # Add headers/footers here if needed in the future
+        # Don't create headers/footers for now to keep it clean
         content = "\n".join(config_sort(configs))
         
         if is_b64:
@@ -143,8 +154,8 @@ def main():
         print(f"SUCCESS: Wrote {len(configs)} configs to {filepath}")
 
     # Write protocol files
-    for p in protocols:
-        write_subscription_file(f"./protocols/{p.lower()}", processed[p])
+    for p_name, p_configs in processed.items():
+        write_subscription_file(f"./protocols/{p_name.lower()}", p_configs)
 
     # Write security files
     write_subscription_file("./security/tls", security['tls'])
@@ -154,20 +165,27 @@ def main():
     for net_type, configs in network.items():
         write_subscription_file(f"./networks/{net_type}", configs)
 
-    # Write country files
+    # Combine all processed configs for country and other mixed files
     all_processed_configs = []
     for p_configs in processed.values():
         all_processed_configs.extend(p_configs)
         
+    # Write country files
     country_dict = create_country(all_processed_configs)
     for country_code, configs in country_dict.items():
-        os.makedirs(f"./countries/{country_code}", exist_ok=True)
-        write_subscription_file(f"./countries/{country_code}/mixed", configs)
+        write_subscription_file(f'./countries/{country_code}/mixed', configs)
+        
+    # Write IPV4/IPV6 files
+    ipv4_list, ipv6_list = create_internet_protocol(all_processed_configs)
+    write_subscription_file('./layers/ipv4', ipv4_list)
+    write_subscription_file('./layers/ipv6', ipv6_list)
+    
+    # Write the main mixed file
+    write_subscription_file('./splitted/mixed', all_processed_configs)
 
-    # ... and so on for any other files your README mentions.
-    # This covers the main categories.
-
-    # Update timestamp for next run
+    # Update helper files for the next run
+    with open('invalid telegram channels.json', 'w') as f:
+        json.dump(sorted(list(invalid_channels)), f, indent=4)
     with open('last update', 'w') as f:
         f.write(current_update.isoformat())
     
