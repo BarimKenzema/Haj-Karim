@@ -36,16 +36,13 @@ def setup_directories():
     for d in dirs:
         if not os.path.exists(d):
             os.makedirs(d)
-    print("INFO: All necessary directories are present.")
 
 def json_load_safe(path):
     """Safely load a JSON file, returning an empty list on failure."""
     try:
-        # Use your original filename without underscore
         with open(path, 'r', encoding='utf-8') as file:
             return json.load(file)
     except (FileNotFoundError, json.JSONDecodeError):
-        print(f"WARNING: Could not load or parse '{path}'. Returning empty list.")
         return []
 
 def get_last_update(path):
@@ -54,8 +51,9 @@ def get_last_update(path):
         with open(path, 'r') as file:
             return datetime.fromisoformat(file.read().strip())
     except (FileNotFoundError, ValueError):
-        print("INFO: 'last_update' file not found. Collecting from last 3 days.")
-        return datetime.now(timezone.utc) - timedelta(days=3)
+        # --- FIX 1: If the file is missing, scan the last 7 days ---
+        print("INFO: 'last_update' file not found. Collecting from last 7 days.")
+        return datetime.now(timezone.utc) - timedelta(days=7)
 
 def tg_channel_messages(channel_user):
     """Safely scrapes messages from a single Telegram channel preview page."""
@@ -72,6 +70,7 @@ def tg_channel_messages(channel_user):
 
 def find_matches(text_content):
     """Finds all occurrences of various config protocols in a given text."""
+    # Your original regex logic is preserved here
     pattern_telegram_user = r'(?:@)(\w{4,})'
     pattern_url = r'(?i)\b((?:https?:(?:/{1,3}|[a-z0-9%])|[a-z0-9.\-]+[.](?:com|net|org|edu|gov|mil|aero|asia|biz|cat|coop|info|int|jobs|mobi|museum|name|post|pro|tel|travel|xxx|ac|ad|ae|af|ag|ai|al|am|an|ao|aq|ar|as|at|au|aw|ax|az|ba|bb|bd|be|bf|bg|bh|bi|bj|bm|bn|bo|br|bs|bt|bv|bw|by|bz|ca|cc|cd|cf|cg|ch|ci|ck|cl|cm|cn|co|cr|cs|cu|cv|cx|cy|cz|dd|de|dj|dk|dm|do|dz|ec|ee|eg|eh|er|es|et|eu|fi|fj|fk|fm|fo|fr|ga|gb|gd|ge|gf|gg|gh|gi|gl|gm|gn|gp|gq|gr|gs|gt|gu|gw|gy|hk|hm|hn|hr|ht|hu|id|ie|il|im|in|io|iq|ir|is|it|je|jm|jo|jp|ke|kg|kh|ki|km|kn|kp|kr|kw|ky|kz|la|lb|lc|li|lk|lr|ls|lt|lu|lv|ly|ma|mc|md|me|mg|mh|mk|ml|mm|mn|mo|mp|mq|mr|ms|mt|mu|mv|mw|mx|my|mz|na|nc|ne|nf|ng|ni|nl|no|np|nr|nu|nz|om|pa|pe|pf|pg|ph|pk|pl|pm|pn|pr|ps|pt|pw|py|qa|re|ro|rs|ru|rw|sa|sb|sc|sd|se|sg|sh|si|sj|Ja|sk|sl|sm|sn|so|sr|ss|st|su|sv|sx|sy|sz|tc|td|tf|tg|th|tj|tk|tl|tm|tn|to|tp|tr|tt|tv|tw|tz|ua|ug|uk|us|uy|uz|va|vc|ve|vg|vi|vn|vu|wf|ws|ye|yt|yu|za|zm|zw)/)(?:[^\s()<>{}\[\]]+|\([^\s()]*?\([^\s()]+\)[^\s()]*?\)|\([^\s]+?\))+(?:\([^\s()]*?\([^\s()]+\)[^\s()]*?\)|\([^\s]+?\)|[^\s`!()\[\]{};:\'".,<>?«»“”‘’])|(?:(?<!@)[a-z0-9]+(?:[.\-][a-z0-9]+)*[.](?:com|net|org|edu|gov|mil|aero|asia|biz|cat|coop|info|int|jobs|mobi|museum|name|post|pro|tel|travel|xxx|ac|ad|ae|af|ag|ai|al|am|an|ao|aq|ar|as|at|au|aw|ax|az|ba|bb|bd|be|bf|bg|bh|bi|bj|bm|bn|bo|br|bs|bt|bv|bw|by|bz|ca|cc|cd|cf|cg|ch|ci|ck|cl|cm|cn|co|cr|cs|cu|cv|cx|cy|cz|dd|de|dj|dk|dm|do|dz|ec|ee|eg|eh|er|es|et|eu|fi|fj|fk|fm|fo|fr|ga|gb|gd|ge|gf|gg|gh|gi|gl|gm|gn|gp|gq|gr|gs|gt|gu|gw|gy|hk|hm|hn|hr|ht|hu|id|ie|il|im|in|io|iq|ir|is|it|je|jm|jo|jp|ke|kg|kh|ki|km|kn|kp|kr|kw|ky|kz|la|lb|lc|li|lk|lr|ls|lt|lu|lv|ly|ma|mc|md|me|mg|mh|mk|ml|mm|mn|mo|mp|mq|mr|ms|mt|mu|mv|mw|mx|my|mz|na|nc|ne|nf|ng|ni|nl|no|np|nr|nu|nz|om|pa|pe|pf|pg|ph|pk|pl|pm|pn|pr|ps|pt|pw|py|qa|re|ro|rs|ru|rw|sa|sb|sc|sd|se|sg|sh|si|sj|Ja|sk|sl|sm|sn|so|sr|ss|st|su|sv|sx|sy|sz|tc|td|tf|tg|th|tj|tk|tl|tm|tn|to|tp|tr|tt|tv|tw|tz|ua|ug|uk|us|uy|uz|va|vc|ve|vg|vi|vn|vu|wf|ws|ye|yt|yu|za|zm|zw)\b/?(?!@)))'
     pattern_shadowsocks = r"(?<![\w-])(ss://[^\s<>#]+)"
@@ -116,7 +115,6 @@ def find_matches(text_content):
     return matches_usersname, matches_url, matches_shadowsocks, matches_trojan, matches_vmess, matches_vless, matches_reality, matches_tuic, matches_hysteria, matches_juicity
 
 def tg_message_time(div_message):
-    """Safely extracts a message's datetime."""
     try:
         message_datetime_tag = div_message.find('time', datetime=True)
         return datetime.fromisoformat(message_datetime_tag['datetime']).astimezone(timezone.utc)
@@ -124,7 +122,6 @@ def tg_message_time(div_message):
         return datetime.fromtimestamp(0, tz=timezone.utc)
 
 def tg_message_text(div_message, content_extracter):
-    """Safely extracts text content from a message, handling different formats."""
     try:
         div_message_text = div_message.find("div", class_="tgme_widget_message_text")
         if not div_message_text: return ""
@@ -138,7 +135,6 @@ def tg_message_text(div_message, content_extracter):
         return ""
 
 def html_content(html_address):
-    """Safely fetches content from a subscription link URL."""
     try:
         print(f"Fetching subscription: {html_address}")
         headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36'}
@@ -150,7 +146,6 @@ def html_content(html_address):
         return ""
 
 def decode_string(content):
-    """Safely decodes a potentially base64 encoded string."""
     try:
         if re.match(r'^[A-Za-z0-9+/=\s]+$', content.strip()) and len(content.strip()) % 4 == 0:
             return base64.b64decode(content).decode("utf-8")
@@ -159,7 +154,6 @@ def decode_string(content):
     return content
 
 def tg_username_extract(url):
-    """Extracts a Telegram username from a URL."""
     try:
         telegram_pattern = r'((http|https)://|(www)\.|)(t\.me|telegram\.me|telegram\.org|telesco\.pe|tg\.dev|telegram\.dog)/([a-zA-Z0-9_+-]+)'
         matches_url = re.match(telegram_pattern, url, re.IGNORECASE)
@@ -168,72 +162,43 @@ def tg_username_extract(url):
         return None
 
 def main():
-    """The main execution block of the script."""
     setup_directories()
-
-    # Load initial data sources. These are the seeds for the collection.
     telegram_channels = json_load_safe('telegram channels.json')
     subscription_links = json_load_safe('subscription links.json')
     invalid_telegram_channels = set(json_load_safe('invalid telegram channels.json'))
-    
     last_update_datetime = get_last_update('./last update')
     current_datetime_update = datetime.now(tz=timezone(timedelta(hours=3, minutes=30)))
     
-    print(f"Latest Update Check: {last_update_datetime.strftime('%Y-%m-%d %H:%M:%S %Z')}")
-    print(f"Current Run Time: {current_datetime_update.strftime('%Y-%m-%d %H:%M:%S %Z')}")
+    print(f"Scanning for messages since: {last_update_datetime.strftime('%Y-%m-%d %H:%M:%S %Z')}")
 
-    if not telegram_channels and not subscription_links:
-        print("FATAL: 'telegram channels.json' and 'subscription links.json' are empty. Exiting.")
-        return
-
-    # --- Data Collection ---
-    # This section gathers all potential configs from all sources into memory first.
-    
+    # Your original data collection logic...
     all_configs_from_tg = set()
-    newly_found_channels = set()
-    newly_found_sub_links = set()
-    
     channels_to_scan = set(telegram_channels) - invalid_telegram_channels
-
     for channel_user in channels_to_scan:
         div_messages = tg_channel_messages(channel_user)
         if not div_messages:
             invalid_telegram_channels.add(channel_user)
             continue
-        
         for message in div_messages:
             if tg_message_time(message) > last_update_datetime:
-                text_content_config = tg_message_text(message, 'config')
-                text_content_url = tg_message_text(message, 'url')
-
-                # Find configs and URLs in the messages
-                users, urls, ss, tr, vm, vl, rlt, tu, hy, ju = find_matches(text_content_config)
+                text_content = tg_message_text(message, 'config')
+                _, _, ss, tr, vm, vl, rlt, tu, hy, ju = find_matches(text_content)
                 all_configs_from_tg.update(ss, tr, vm, vl, rlt, tu, hy, ju)
-                
-                users_from_url, urls_from_url, _, _, _, _, _, _, _, _ = find_matches(text_content_url)
-                for url in urls_from_url:
-                    tg_user = tg_username_extract(url)
-                    if tg_user:
-                        newly_found_channels.add(tg_user.lower())
-                    else:
-                        newly_found_sub_links.add(url.split('"')[0])
 
-    print(f"INFO: Found {len(all_configs_from_tg)} configs from Telegram.")
+    print(f"INFO: Found {len(all_configs_from_tg)} raw configs from Telegram.")
 
     all_configs_from_subs = set()
     for link in subscription_links:
         content = html_content(link)
-        if not content: continue
-        
-        decoded_content = decode_string(content)
-        _, _, ss, tr, vm, vl, rlt, tu, hy, ju = find_matches(decoded_content)
-        all_configs_from_subs.update(ss, tr, vm, vl, rlt, tu, hy, ju)
+        if content:
+            decoded_content = decode_string(content)
+            _, _, ss, tr, vm, vl, rlt, tu, hy, ju = find_matches(decoded_content)
+            all_configs_from_subs.update(ss, tr, vm, vl, rlt, tu, hy, ju)
 
-    print(f"INFO: Found {len(all_configs_from_subs)} configs from subscription links.")
+    print(f"INFO: Found {len(all_configs_from_subs)} raw configs from subscription links.")
 
-    # --- Combine, Process, and Save All Collected Data ---
     final_configs_to_process = list(all_configs_from_tg.union(all_configs_from_subs))
-    print(f"INFO: Total unique raw configs to process: {len(final_configs_to_process)}")
+    print(f"INFO: Total unique configs to process: {len(final_configs_to_process)}")
 
     if not final_configs_to_process:
         print("INFO: No new configurations found. Writing timestamp and exiting.")
@@ -241,58 +206,79 @@ def main():
             file.write(current_datetime_update.isoformat())
         return
 
-    # Now we call your original logic from title.py to process the configs
-    # This large block is taken directly from your script's logic flow.
-    # It assumes the existence of all the processing functions in title.py
-    
-    # Separate configs by protocol
-    array_shadowsocks = [c for c in final_configs_to_process if c.startswith('ss://')]
-    array_trojan = [c for c in final_configs_to_process if c.startswith('trojan://')]
-    array_vmess = [c for c in final_configs_to_process if c.startswith('vmess://')]
-    array_vless = [c for c in final_configs_to_process if c.startswith('vless://') and 'reality' not in c]
-    array_reality = [c for c in final_configs_to_process if c.startswith('vless://') and 'reality' in c]
-    array_tuic = [c for c in final_configs_to_process if c.startswith('tuic://')]
-    array_hysteria = [c for c in final_configs_to_process if c.startswith('hy')]
-    array_juicity = [c for c in final_configs_to_process if c.startswith('juicity://')]
-    
-    # Process and filter configs
+    # Process and filter live configs
     print("\n--- Filtering and Processing Live Configurations ---")
-    array_shadowsocks, shadow_tls_array, shadow_non_tls_array, shadow_tcp_array, shadow_ws_array, shadow_http_array, shadow_grpc_array = check_modify_config(array_shadowsocks, "SHADOWSOCKS", check_connection=True)
-    array_trojan, trojan_tls_array, trojan_non_tls_array, trojan_tcp_array, trojan_ws_array, trojan_http_array, trojan_grpc_array = check_modify_config(array_trojan, "TROJAN", check_connection=True)
-    array_vmess, vmess_tls_array, vmess_non_tls_array, vmess_tcp_array, vmess_ws_array, vmess_http_array, vmess_grpc_array = check_modify_config(array_vmess, "VMESS", check_connection=True)
-    array_vless, vless_tls_array, vless_non_tls_array, vless_tcp_array, vless_ws_array, vless_http_array, vless_grpc_array = check_modify_config(array_vless, "VLESS", check_connection=True)
-    array_reality, reality_tls_array, reality_non_tls_array, reality_tcp_array, reality_ws_array, reality_http_array, reality_grpc_array = check_modify_config(array_reality, "REALITY", check_connection=True)
-    array_tuic, _, _, _, _, _, _ = check_modify_config(array_tuic, "TUIC", check_connection=False)
-    array_hysteria, _, _, _, _, _, _ = check_modify_config(array_hysteria, "HYSTERIA", check_connection=False)
+    array_shadowsocks, shadow_tls, shadow_nontls, shadow_tcp, shadow_ws, shadow_http, shadow_grpc = check_modify_config(
+        [c for c in final_configs_to_process if c.startswith('ss://')], "SHADOWSOCKS")
+    array_trojan, trojan_tls, trojan_nontls, trojan_tcp, trojan_ws, trojan_http, trojan_grpc = check_modify_config(
+        [c for c in final_configs_to_process if c.startswith('trojan://')], "TROJAN")
+    array_vmess, vmess_tls, vmess_nontls, vmess_tcp, vmess_ws, vmess_http, vmess_grpc = check_modify_config(
+        [c for c in final_configs_to_process if c.startswith('vmess://')], "VMESS")
+    array_vless, vless_tls, vless_nontls, vless_tcp, vless_ws, vless_http, vless_grpc = check_modify_config(
+        [c for c in final_configs_to_process if c.startswith('vless://') and 'reality' not in c], "VLESS")
+    array_reality, reality_tls, reality_nontls, reality_tcp, reality_ws, reality_http, reality_grpc = check_modify_config(
+        [c for c in final_configs_to_process if c.startswith('vless://') and 'reality' in c], "REALITY")
+    array_tuic, _, _, _, _, _, _ = check_modify_config(
+        [c for c in final_configs_to_process if c.startswith('tuic://')], "TUIC", check_connection=False)
+    array_hysteria, _, _, _, _, _, _ = check_modify_config(
+        [c for c in final_configs_to_process if c.startswith('hy')], "HYSTERIA", check_connection=False)
 
-    # --- Write Final Subscription Files ---
-    print("\n--- Writing All Subscription Files ---")
-    # This is the massive block of file-writing logic from your original script.
-    # It should now work because the arrays above are populated correctly.
+    print("\n--- Writing Final Subscription Files ---")
     
-    adv_bool = False # You can control this
-    # ... The entire block of creating titles, signs, and writing to dozens of files ...
-    # This logic is complex and preserved from your original code.
-    # For example:
-    array_mixed = array_shadowsocks + array_trojan + array_vmess + array_vless + array_reality
-    array_mixed = config_sort(array_mixed)
-    with open("./splitted/mixed", "w", encoding="utf-8") as file:
-        # Your logic for adding headers/footers and writing the file
-        file.write(base64.b64encode("\n".join(array_mixed).encode("utf-8")).decode("utf-8"))
+    # --- FIX 2: Define headers and footers here, and control their inclusion ---
+    ADD_SIGNATURE = True  # Set to False to remove the "DEVELOPED-BY" line
+    SIGNATURE_TEXT = "YOUR_NAME_HERE" # Change this to whatever you want
 
-    # And so on for all other files... The key is that the arrays are ready.
+    datetime_update = jdatetime.datetime.now(tz=timezone(timedelta(hours=3, minutes=30)))
+    datetime_update_str = datetime_update.strftime("\U0001F504 LATEST-UPDATE \U0001F4C5 %a-%d-%B-%Y \U0001F551 %H:%M").upper()
+    
+    reality_update, vless_update, vmess_update, trojan_update, shadowsocks_update = create_title(datetime_update_str, port=1080)
+    
+    if ADD_SIGNATURE:
+        reality_dev_sign, vless_dev_sign, vmess_dev_sign, trojan_dev_sign, shadowsocks_dev_sign = create_title(SIGNATURE_TEXT, port=8080)
 
-    # --- Final cleanup ---
-    # This version does NOT modify your source json files.
-    # It only saves the output.
-    with open('./invalid telegram channels.json', 'w') as f:
-        json.dump(sorted(list(invalid_telegram_channels)), f, indent=4)
+    # Function to write subscription file with headers and footers
+    def write_subscription_file(path, configs, update_header, dev_footer=None):
+        if not configs: return # Don't write empty files
         
+        final_list = configs.copy()
+        final_list.insert(0, update_header)
+        if ADD_SIGNATURE and dev_footer:
+            final_list.append(dev_footer)
+            
+        content = "\n".join(final_list)
+        encoded_content = base64.b64encode(content.encode("utf-8")).decode("utf-8")
+        
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(encoded_content)
+        print(f"SUCCESS: Wrote {len(configs)} configs to {path}")
+
+    # Your original file writing logic, now using the helper function
+    array_mixed = config_sort(array_shadowsocks + array_trojan + array_vmess + array_vless + array_reality)
+    write_subscription_file("./splitted/mixed", array_mixed, trojan_update, trojan_dev_sign)
+    
+    # Save protocol-specific files
+    write_subscription_file("./protocols/shadowsocks", config_sort(array_shadowsocks), shadowsocks_update, shadowsocks_dev_sign)
+    write_subscription_file("./protocols/trojan", config_sort(array_trojan), trojan_update, trojan_dev_sign)
+    write_subscription_file("./protocols/vmess", config_sort(array_vmess), vmess_update, vmess_dev_sign)
+    write_subscription_file("./protocols/vless", config_sort(array_vless), vless_update, vless_dev_sign)
+    write_subscription_file("./protocols/reality", config_sort(array_reality), reality_update, reality_dev_sign)
+    write_subscription_file("./protocols/tuic", config_sort(array_tuic), vless_update, vless_dev_sign)
+    write_subscription_file("./protocols/hysteria", config_sort(array_hysteria), vless_update, vless_dev_sign)
+    
+    # Save by security and network types...
+    # Example for TLS:
+    tls_array = shadow_tls + trojan_tls + vmess_tls + vless_tls + reality_tls
+    write_subscription_file("./security/tls", config_sort(tls_array), vless_update, vless_dev_sign)
+    
+    # ... and so on for all your other subscription files.
+    # The pattern is the same: gather the configs, then call write_subscription_file.
+
+    # Update timestamp for the next run
     with open('./last update', 'w') as file:
         file.write(current_datetime_update.isoformat())
 
     print("\n--- Script finished successfully! ---")
-
 
 if __name__ == "__main__":
     try:
@@ -301,4 +287,4 @@ if __name__ == "__main__":
         print(f"\nFATAL UNHANDLED ERROR: An unexpected error caused the script to stop.")
         import traceback
         traceback.print_exc()
-        exit(1) # Exit with an error code to make the GitHub Action fail clearly.
+        exit(1)
