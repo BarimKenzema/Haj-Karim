@@ -182,7 +182,7 @@ def main():
         configs_for_proto = [c for c in final_configs if p.lower() in c.split('://')[0]]
         print(f"--- main.py: Processing {len(configs_for_proto)} configs for {p} ---")
         # The check_connection=False for TUIC/HYSTERIA is from your original logic
-        is_checkable = false
+        is_checkable = False
         processed_configs[p], *_ = check_modify_config(configs_for_proto, p, check_connection=is_checkable)
 
     # --- Start Final File Writing ---
