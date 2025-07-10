@@ -226,7 +226,7 @@ def main():
     print("\n--- Writing Final Subscription Files ---")
     
     # --- FIX 2: Define headers and footers here, and control their inclusion ---
-    ADD_SIGNATURE = True  # Set to False to remove the "DEVELOPED-BY" line
+    ADD_SIGNATURE = False  # Set to False to remove the "DEVELOPED-BY" line
     SIGNATURE_TEXT = "YOUR_NAME_HERE" # Change this to whatever you want
 
     datetime_update = jdatetime.datetime.now(tz=timezone(timedelta(hours=3, minutes=30)))
