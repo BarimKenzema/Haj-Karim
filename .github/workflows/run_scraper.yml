@@ -1,0 +1,39 @@
+name: Run Config Scraper
+
+on:
+  schedule:
+    - cron: '0 */6 * * *'
+  workflow_dispatch:
+
+jobs:
+  scrape_and_commit:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository code
+        # We need to use a PAT here so the next step can push
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.ACTIONS_PAT }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+
+      - name: Run the scraper script
+        run: |
+          python main.py
+
+      - name: Commit and push updated files
+        # This action will automatically detect changes, commit them, and push
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "Update subscription files"
+          # This action uses the default GITHUB_TOKEN but since we checked out with a PAT
+          # it will have the correct permissions to push.
