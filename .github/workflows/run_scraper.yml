@@ -1,39 +1,41 @@
-name: Run Config Scraper
+name: Run V2Ray Collector
 
 on:
   schedule:
+    # Runs every 6 hours
     - cron: '0 */6 * * *'
+  # Allows manual runs
   workflow_dispatch:
 
 jobs:
-  scrape_and_commit:
+  build:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Check out repository code
-        # We need to use a PAT here so the next step can push
-        uses: actions/checkout@v4
-        with:
-          token: ${{ secrets.ACTIONS_PAT }}
+    - name: Check out repository
+      uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
 
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
 
-      - name: Run the scraper script
-        run: |
-          python main.py
+    - name: Run Python script
+      # THIS "env:" BLOCK IS THE CRITICAL FIX
+      # It passes the repository secrets into the script as environment variables
+      env:
+        TELEGRAM_API_ID: ${{ secrets.TELEGRAM_API_ID }}
+        TELEGRAM_API_HASH: ${{ secrets.TELEGRAM_API_HASH }}
+        TELETHON_SESSION: ${{ secrets.TELETHON_SESSION }}
+      run: python main.py
 
-      - name: Commit and push updated files
-        # This action will automatically detect changes, commit them, and push
-        uses: stefanzweifel/git-auto-commit-action@v5
-        with:
-          commit_message: "Update subscription files"
-          # This action uses the default GITHUB_TOKEN but since we checked out with a PAT
-          # it will have the correct permissions to push.
+    - name: Commit and push changes
+      # This action automatically commits any new/changed files
+      uses: stefanzweifel/git-auto-commit-action@v5
+      with:
+        commit_message: "Update subscription files"
