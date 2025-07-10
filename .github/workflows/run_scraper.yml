@@ -51,5 +51,4 @@ jobs:
         git commit -m "Update subscription files"
         
         # Push the changes back to the repository using the PAT for authentication
-        # This explicitly uses your PAT to grant permission.
         git push https://${{ secrets.ACTIONS_PAT }}@github.com/${{ github.repository }}.git HEAD:main
