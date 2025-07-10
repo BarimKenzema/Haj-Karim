@@ -5,3 +5,5 @@ pycountry_convert
 tldextract
 geoip2
 dnspython
+requests
+telethon
