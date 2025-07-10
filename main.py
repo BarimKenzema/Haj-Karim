@@ -2,18 +2,15 @@ import os
 import re
 import base64
 import requests
-import json # Make sure json is imported
+import json
 
-print("--- RAW CONFIG COLLECTOR v3 (Absolute Paths) ---")
+print("--- RAW CONFIG COLLECTOR v4 (Final Regex) ---")
 
-# --- THIS IS THE CRITICAL FIX ---
 # Get the directory where this script itself is located.
-# This gives us a reliable base path.
 SCRIPT_DIR = os.path.dirname(os.path.realpath(__file__))
 
 def json_load_safe(filename):
     """Safely loads a JSON file using an absolute path."""
-    # Construct the full path to the file next to the script
     absolute_path = os.path.join(SCRIPT_DIR, filename)
     print(f"Attempting to load file from absolute path: {absolute_path}")
     
@@ -28,15 +25,15 @@ def find_configs_raw(text):
     """Finds all possible config links using a broad regex."""
     if not text:
         return []
-    pattern = r'(vless|vmess|trojan|ss|hy|hy2|tuic|juicity)://[^\s<>"\'`]+'
+    # --- THIS IS THE CRITICAL FIX ---
+    # The (?:...) makes the first group non-capturing, so it returns the whole match.
+    pattern = r'(?:vless|vmess|trojan|ss|hy|hy2|tuic|juicity)://[^\s<>"\'`]+'
     return re.findall(pattern, text, re.IGNORECASE)
 
 def main():
-    # Use the SCRIPT_DIR to create the output directory reliably
     output_dir = os.path.join(SCRIPT_DIR, 'subscribe')
     os.makedirs(output_dir, exist_ok=True)
     
-    # Use the safe loader function with the correct filename
     subs_links = json_load_safe('subscription links.json')
     if not subs_links:
         print("FATAL: 'subscription links.json' is empty or could not be found. No sources to scan.")
@@ -50,6 +47,7 @@ def main():
             print(f"Fetching: {link}")
             content = requests.get(link, timeout=20, headers={'User-Agent': 'Mozilla/5.0'}).text
             
+            # Try to decode if it's base64. If not, use the raw text.
             try:
                 decoded_content = base64.b64decode(content).decode('utf-8', 'ignore')
                 all_raw_configs.update(find_configs_raw(decoded_content))
