@@ -1,10 +1,11 @@
-# FINAL HYBRID SCRIPT v4: With Config Chunking
+# FINAL HYBRID SCRIPT v6: With Deduplication, Cleanup & Chunking
 import os
 import json
 import re
 import base64
 import time
 import traceback
+import shutil # Import the shutil module for directory cleanup
 from datetime import datetime, timezone, timedelta
 import requests
 import jdatetime
@@ -27,17 +28,26 @@ SESSION_STRING = os.environ.get('TELETHON_SESSION')
 CONFIG_CHUNK_SIZE = 111  # Set the maximum number of configs per file
 
 # --- Helper Functions ---
-def setup_directories():
-    dirs = [
+def setup_and_clean_directories():
+    """
+    Deletes old output directories if they exist, then recreates them.
+    This ensures a clean state for every run.
+    """
+    dirs_to_recreate = [
         './splitted', './subscribe', './channels', './security', './protocols',
         './networks', './layers', './countries'
     ]
-    for d in dirs:
-        os.makedirs(d, exist_ok=True)
+    print("--- Cleaning up old output directories... ---")
+    for d in dirs_to_recreate:
+        if os.path.exists(d):
+            shutil.rmtree(d) # Deletes the directory and all its contents
+        os.makedirs(d)
+
     for parent in ['subscribe', 'channels']:
         for sub in ['protocols', 'networks', 'security', 'layers']:
             os.makedirs(os.path.join(parent, sub), exist_ok=True)
-    print("INFO: All necessary directories are present.")
+    
+    print("INFO: All output directories are clean and ready.")
 
 def json_load_safe(path):
     try:
@@ -54,32 +64,24 @@ def find_configs_raw(text):
     pattern = r'(?:vless|vmess|trojan|ss|hy2|hysteria|tuic|juicity)://[^\s<>"\'`]+'
     return re.findall(pattern, text, re.IGNORECASE)
 
-# --- NEW HELPER FUNCTION FOR CHUNKING ---
 def write_chunked_subscription_files(base_filepath, configs, is_b64=True):
     """
     Writes a list of configs to one or more files, splitting them into
     chunks of a specified size.
-    Example: ./protocols/vless -> ./protocols/vless, ./protocols/vless2, ./protocols/vless3
     """
     os.makedirs(os.path.dirname(base_filepath), exist_ok=True)
     
     if not configs:
-        # Still create an empty base file to prevent 404 errors
         with open(base_filepath, "w") as f: f.write("")
         return
 
     sorted_configs = config_sort(configs)
-    
-    # Split the sorted configs into chunks
     chunks = [sorted_configs[i:i + CONFIG_CHUNK_SIZE] for i in range(0, len(sorted_configs), CONFIG_CHUNK_SIZE)]
     
     for i, chunk in enumerate(chunks):
-        # Determine the filename for this chunk
         if i == 0:
-            # The first file has the original name
             filepath = base_filepath
         else:
-            # Subsequent files get a number suffix (e.g., vless2, vless3)
             directory, filename = os.path.split(base_filepath)
             filepath = os.path.join(directory, f"{filename}{i + 1}")
 
@@ -93,18 +95,20 @@ def write_chunked_subscription_files(base_filepath, configs, is_b64=True):
 
 
 def main():
-    print("--- HYBRID COLLECTOR/PROCESSOR (WITH CHUNKING) START ---")
+    print("--- HYBRID COLLECTOR/PROCESSOR (WITH DEDUPLICATION) START ---")
     if not all([API_ID, API_HASH, SESSION_STRING]):
         print("FATAL: Missing Telegram secrets.")
         exit(1)
 
-    setup_directories()
+    setup_and_clean_directories()
+    
     channels = json_load_safe('telegram channels.json')
     subs_links = json_load_safe('subscription links.json')
     invalid_channels = set(json_load_safe('invalid telegram channels.json'))
     last_update = get_last_update('last update')
     current_update = datetime.now(timezone.utc)
 
+    # --- THIS IS THE KEY: We use a SET to automatically handle duplicates ---
     all_raw_configs = set()
 
     # Part 1: DATA COLLECTION
@@ -119,6 +123,7 @@ def main():
                     print(f"Scanning @{channel} ({i+1}/{len(channels_to_scan)})...")
                     for message in client.iter_messages(channel, limit=200):
                         if message.date < last_update: break
+                        # .update() on a set adds all items from the list, ignoring duplicates
                         all_raw_configs.update(find_configs_raw(message.text))
                     time.sleep(2)
                 except Exception as e:
@@ -137,8 +142,11 @@ def main():
         except Exception as e:
             print(f"--> ERROR fetching sub link {link}: {e}")
     
+    # --- THIS IS THE KEY CHANGE ---
+    # We convert the set to a list here, ensuring all configs are unique BEFORE processing.
     final_configs_to_process = list(all_raw_configs)
-    print(f"\n--- Found {len(final_configs_to_process)} total raw configs. Starting processing... ---")
+    
+    print(f"\n--- Found {len(final_configs_to_process)} total unique configs. Starting processing... ---")
     if not final_configs_to_process:
         print("INFO: No new configs found. Exiting.")
         with open('last update', 'w') as f: f.write(current_update.isoformat())
@@ -166,37 +174,29 @@ def main():
         network['http'].extend(p_http)
         network['grpc'].extend(p_grpc)
 
-    # Part 3: FILE WRITING (Using the new chunking function)
+    # Part 3: FILE WRITING
     print("\n--- Writing All Categorized and Chunked Subscription Files ---")
     
-    # Write protocol files
     for p_name, p_configs in processed.items():
         write_chunked_subscription_files(f"./protocols/{p_name.lower()}", p_configs)
-
-    # Write security files
-    write_chunked_subscription_files("./security/tls", security['tls'])
-    write_chunked_subscription_files("./security/non-tls", security['non_tls'])
-
-    # Write network files
+    for sec_type, configs in security.items():
+        write_chunked_subscription_files(f"./security/{sec_type.replace('_','-')}", configs)
     for net_type, configs in network.items():
         write_chunked_subscription_files(f"./networks/{net_type}", configs)
-
-    # Combine all processed configs for country and other mixed files
+        
     all_processed_configs = []
     for p_configs in processed.values():
         all_processed_configs.extend(p_configs)
         
-    # Write country files
     country_dict = create_country(all_processed_configs)
     for country_code, configs in country_dict.items():
+        os.makedirs(f'./countries/{country_code}', exist_ok=True)
         write_chunked_subscription_files(f'./countries/{country_code}/mixed', configs)
         
-    # Write IPV4/IPV6 files
     ipv4_list, ipv6_list = create_internet_protocol(all_processed_configs)
     write_chunked_subscription_files('./layers/ipv4', ipv4_list)
     write_chunked_subscription_files('./layers/ipv6', ipv6_list)
     
-    # Write the main mixed file
     write_chunked_subscription_files('./splitted/mixed', all_processed_configs)
 
     # Update helper files
