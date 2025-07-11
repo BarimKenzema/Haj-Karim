@@ -1,16 +1,8 @@
-# FINAL HYBRID SCRIPT v6: With Deduplication, Cleanup & Chunking
-import os
-import json
-import re
-import base64
-import time
-import traceback
-import shutil # Import the shutil module for directory cleanup
-from datetime import datetime, timezone, timedelta
+# FINAL HYBRID SCRIPT v7: With Correct Protocol Separation
+import os, json, re, base64, time, traceback
 import requests
 import jdatetime
 
-# --- Import all processing functions from your title.py ---
 try:
     from title import (
         check_modify_config, config_sort, create_country, create_country_table,
@@ -21,33 +13,21 @@ except ImportError as e:
     print(f"FATAL: 'title.py' is missing or has an error. It's required for this script. Error: {e}")
     exit(1)
 
-# --- Configuration (from GitHub Secrets) ---
 API_ID = os.environ.get('TELEGRAM_API_ID')
 API_HASH = os.environ.get('TELEGRAM_API_HASH')
 SESSION_STRING = os.environ.get('TELETHON_SESSION')
-CONFIG_CHUNK_SIZE = 111  # Set the maximum number of configs per file
+CONFIG_CHUNK_SIZE = 111
 
-# --- Helper Functions ---
-def setup_and_clean_directories():
-    """
-    Deletes old output directories if they exist, then recreates them.
-    This ensures a clean state for every run.
-    """
-    dirs_to_recreate = [
+def setup_directories():
+    dirs = [
         './splitted', './subscribe', './channels', './security', './protocols',
         './networks', './layers', './countries'
     ]
-    print("--- Cleaning up old output directories... ---")
-    for d in dirs_to_recreate:
-        if os.path.exists(d):
-            shutil.rmtree(d) # Deletes the directory and all its contents
-        os.makedirs(d)
-
+    for d in dirs: os.makedirs(d, exist_ok=True)
     for parent in ['subscribe', 'channels']:
         for sub in ['protocols', 'networks', 'security', 'layers']:
             os.makedirs(os.path.join(parent, sub), exist_ok=True)
-    
-    print("INFO: All output directories are clean and ready.")
+    print("INFO: All necessary directories are present.")
 
 def json_load_safe(path):
     try:
@@ -65,50 +45,30 @@ def find_configs_raw(text):
     return re.findall(pattern, text, re.IGNORECASE)
 
 def write_chunked_subscription_files(base_filepath, configs, is_b64=True):
-    """
-    Writes a list of configs to one or more files, splitting them into
-    chunks of a specified size.
-    """
     os.makedirs(os.path.dirname(base_filepath), exist_ok=True)
-    
     if not configs:
         with open(base_filepath, "w") as f: f.write("")
         return
-
     sorted_configs = config_sort(configs)
     chunks = [sorted_configs[i:i + CONFIG_CHUNK_SIZE] for i in range(0, len(sorted_configs), CONFIG_CHUNK_SIZE)]
-    
     for i, chunk in enumerate(chunks):
-        if i == 0:
-            filepath = base_filepath
-        else:
-            directory, filename = os.path.split(base_filepath)
-            filepath = os.path.join(directory, f"{filename}{i + 1}")
-
+        filepath = base_filepath if i == 0 else os.path.join(os.path.dirname(base_filepath), f"{os.path.basename(base_filepath)}{i + 1}")
         content = "\n".join(chunk)
-        if is_b64:
-            content = base64.b64encode(content.encode("utf-8")).decode("utf-8")
-        
-        with open(filepath, "w", encoding="utf-8") as f:
-            f.write(content)
+        if is_b64: content = base64.b64encode(content.encode("utf-8")).decode("utf-8")
+        with open(filepath, "w", encoding="utf-8") as f: f.write(content)
         print(f"SUCCESS: Wrote {len(chunk)} configs to {filepath}")
 
-
 def main():
-    print("--- HYBRID COLLECTOR/PROCESSOR (WITH DEDUPLICATION) START ---")
+    print("--- HYBRID COLLECTOR/PROCESSOR (Protocol-Aware) START ---")
     if not all([API_ID, API_HASH, SESSION_STRING]):
-        print("FATAL: Missing Telegram secrets.")
-        exit(1)
+        print("FATAL: Missing Telegram secrets."); exit(1)
 
-    setup_and_clean_directories()
-    
+    setup_directories()
     channels = json_load_safe('telegram channels.json')
     subs_links = json_load_safe('subscription links.json')
     invalid_channels = set(json_load_safe('invalid telegram channels.json'))
     last_update = get_last_update('last update')
     current_update = datetime.now(timezone.utc)
-
-    # --- THIS IS THE KEY: We use a SET to automatically handle duplicates ---
     all_raw_configs = set()
 
     # Part 1: DATA COLLECTION
@@ -123,14 +83,12 @@ def main():
                     print(f"Scanning @{channel} ({i+1}/{len(channels_to_scan)})...")
                     for message in client.iter_messages(channel, limit=200):
                         if message.date < last_update: break
-                        # .update() on a set adds all items from the list, ignoring duplicates
                         all_raw_configs.update(find_configs_raw(message.text))
                     time.sleep(2)
                 except Exception as e:
                     print(f"--> ERROR scanning @{channel}: {e}")
                     invalid_channels.add(channel)
-    except Exception as e:
-        print(f"FATAL: Could not connect to Telegram: {e}")
+    except Exception as e: print(f"FATAL: Could not connect to Telegram: {e}")
 
     print(f"\n--- Fetching {len(subs_links)} subscription links... ---")
     for link in subs_links:
@@ -139,13 +97,9 @@ def main():
             try: content = base64.b64decode(content).decode('utf-8')
             except: pass
             all_raw_configs.update(find_configs_raw(content))
-        except Exception as e:
-            print(f"--> ERROR fetching sub link {link}: {e}")
+        except Exception as e: print(f"--> ERROR fetching sub link {link}: {e}")
     
-    # --- THIS IS THE KEY CHANGE ---
-    # We convert the set to a list here, ensuring all configs are unique BEFORE processing.
     final_configs_to_process = list(all_raw_configs)
-    
     print(f"\n--- Found {len(final_configs_to_process)} total unique configs. Starting processing... ---")
     if not final_configs_to_process:
         print("INFO: No new configs found. Exiting.")
@@ -160,10 +114,19 @@ def main():
     security = {'tls': [], 'non_tls': []}
     network = {'tcp': [], 'ws': [], 'grpc': [], 'http': []}
     
+    # --- THIS IS THE CRITICAL FIX FOR PROTOCOL SEPARATION ---
     for p in protocols:
-        configs_for_proto = [c for c in final_configs_to_process if p.lower() in c.split('://')[0].lower()]
-        if p == "HYSTERIA": configs_for_proto = [c for c in final_configs_to_process if c.startswith('hy')]
+        configs_for_proto = []
+        if p == "VLESS":
+            configs_for_proto = [c for c in final_configs_to_process if c.startswith('vless://') and 'security=reality' not in c]
+        elif p == "REALITY":
+            configs_for_proto = [c for c in final_configs_to_process if c.startswith('vless://') and 'security=reality' in c]
+        elif p == "HYSTERIA":
+            configs_for_proto = [c for c in final_configs_to_process if c.startswith('hy')]
+        else:
+            configs_for_proto = [c for c in final_configs_to_process if c.startswith(p.lower())]
             
+        print(f"--- Found {len(configs_for_proto)} raw configs for {p} ---")
         p_mod, p_tls, p_nontls, p_tcp, p_ws, p_http, p_grpc = check_modify_config(configs_for_proto, p, check_connection=False)
         
         processed[p].extend(p_mod)
@@ -175,7 +138,7 @@ def main():
         network['grpc'].extend(p_grpc)
 
     # Part 3: FILE WRITING
-    print("\n--- Writing All Categorized and Chunked Subscription Files ---")
+    print("\n--- Writing All Categorized Subscription Files ---")
     
     for p_name, p_configs in processed.items():
         write_chunked_subscription_files(f"./protocols/{p_name.lower()}", p_configs)
@@ -184,22 +147,16 @@ def main():
     for net_type, configs in network.items():
         write_chunked_subscription_files(f"./networks/{net_type}", configs)
         
-    all_processed_configs = []
-    for p_configs in processed.values():
-        all_processed_configs.extend(p_configs)
-        
+    all_processed_configs = [item for sublist in processed.values() for item in sublist]
     country_dict = create_country(all_processed_configs)
     for country_code, configs in country_dict.items():
-        os.makedirs(f'./countries/{country_code}', exist_ok=True)
         write_chunked_subscription_files(f'./countries/{country_code}/mixed', configs)
         
     ipv4_list, ipv6_list = create_internet_protocol(all_processed_configs)
     write_chunked_subscription_files('./layers/ipv4', ipv4_list)
     write_chunked_subscription_files('./layers/ipv6', ipv6_list)
-    
     write_chunked_subscription_files('./splitted/mixed', all_processed_configs)
 
-    # Update helper files
     with open('invalid telegram channels.json', 'w') as f: json.dump(sorted(list(invalid_channels)), f, indent=4)
     with open('last update', 'w') as f: f.write(current_update.isoformat())
     
