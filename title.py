@@ -1,12 +1,9 @@
-# FINAL BULLETPROOF version of title.py - v2 with Country Fix
-import os, uuid, time, random, json, pycountry_convert as pc, html, requests, socket, ipaddress, tldextract, geoip2.database, re, base64
+# FINAL BULLETPROOF version of title.py - v4 Ultimate Fix
+import os, uuid, time, random, json, pycountry_convert as pc, html, socket, ipaddress, tldextract, geoip2.database, re, base64
 from urllib.parse import urlparse, parse_qs
 
-print("--- title.py: STARTING SCRIPT (v2 - Country Fix) ---")
+print("--- title.py: STARTING SCRIPT (v4 - ULTIMATE FIX) ---")
 
-# All the helper functions from before are correct and can remain the same.
-# For brevity, I will only show the changed function.
-# You must have all the other functions (is_valid_uuid, get_ips, etc.) in your file.
 def is_valid_uuid(v):
     try: uuid.UUID(str(v)); return True
     except: return False
@@ -29,15 +26,13 @@ def get_ips(node):
                 if answers: ips.update({rdata.address for rdata in answers})
             except: continue
         return list(ips) if ips else None
-    except Exception as e:
-        print(f"--> [DNS_ERROR] for {node}: {e}"); return None
+    except Exception: return None
 def get_country_from_ip(ip):
     db_path = "./geoip-lite/geoip-lite-country.mmdb"
     if not os.path.exists(db_path): return "XX"
     try:
         with geoip2.database.Reader(db_path) as reader:
-            response = reader.country(ip)
-            return response.country.iso_code or "XX"
+            return reader.country(ip).country.iso_code or "XX"
     except: return "XX"
 def get_country_flag(cc):
     if not cc or cc.upper() in ['NA', 'XX']: return "\U0001F3F4\u200D\u2620\uFE0F"
@@ -57,63 +52,87 @@ def ping_ip_address(ip, port, timeout=1.5):
                 return round((time.time() - start_time) * 1000, 2)
             return 9999
     except: return 9999
+
 def check_modify_config(array_configuration, protocol_type, check_connection=True):
-    # This function is correct from the previous version.
-    # No changes needed here.
-    # ... (Your full check_modify_config function) ...
-    # For brevity, I am not pasting the whole thing again, but it should be here.
     print(f"--- Processing {len(array_configuration)} configs for {protocol_type} ---")
     modified_array, tls_array, non_tls_array = [], [], []
     tcp_array, ws_array, http_array, grpc_array = [],[],[],[]
+
     for element in array_configuration:
         try:
-            parsed_url = urlparse(element)
-            if not parsed_url.hostname or not parsed_url.port: continue
-            config_id = parsed_url.username; host = parsed_url.hostname; port = parsed_url.port
+            # --- Universal Parsing ---
+            if "://" not in element: continue
+            proto_part, main_part = element.split("://", 1)
+            
+            # --- Protocol Specific Parsing ---
             if protocol_type == "VMESS":
-                try:
-                    json_str = element.replace("vmess://", "").strip()
-                    if len(json_str) % 4 != 0: json_str += '=' * (4 - len(json_str) % 4)
-                    decoded_config = json.loads(base64.b64decode(json_str).decode('utf-8', errors='ignore'))
-                    host = decoded_config.get('add', host); port = int(decoded_config.get('port', port)); config_id = decoded_config.get('id')
-                except Exception: continue
-            if not is_valid_uuid(config_id): continue
+                json_str = main_part.strip()
+                if len(json_str) % 4 != 0: json_str += '=' * (4 - len(json_str) % 4)
+                config = json.loads(base64.b64decode(json_str).decode('utf-8', errors='ignore'))
+                host, port, config_id = config.get('add'), int(config.get('port', 0)), config.get('id')
+                params = config # The whole dict acts as params
+            else:
+                parsed_url = urlparse(element)
+                host, port, config_id = parsed_url.hostname, parsed_url.port, parsed_url.username
+                params = parse_qs(parsed_url.query)
+
+            if not all([host, port, config_id]): continue
+            if not is_valid_uuid(config_id):
+                # SS uses a different encoding, not UUID
+                if protocol_type != 'SHADOWSOCKS': continue
+
+            # --- Network & Processing ---
             ips = get_ips(host)
             if not ips: continue
             ip_address = ips[0]
+            
             if check_connection:
                 if not check_port(ip_address, port): continue
                 ping = ping_ip_address(ip_address, port)
                 if ping > 2000: continue
-            else: ping = 0
+            else:
+                ping = 0
+            
+            # --- Title Generation ---
             country_code = get_country_from_ip(ip_address)
             country_flag = get_country_flag(country_code)
             ip_display = f"[{ip_address}]" if ":" in ip_address else ip_address
-            params = parse_qs(parsed_url.query)
-            config_type = params.get('type', ['tcp'])[0].upper()
-            config_secrt = params.get('security', ['NA'])[0].upper()
+            
+            config_type = "TCP" # Default
+            config_secrt = "NA" # Default
+            if isinstance(params, dict) and protocol_type == 'VMESS':
+                config_type = params.get('net', 'tcp').upper()
+                config_secrt = 'TLS' if params.get('tls') == 'tls' else 'NA'
+            elif isinstance(params, dict):
+                config_type = params.get('type', ['tcp'])[0].upper()
+                config_secrt = params.get('security', ['NA'])[0].upper()
+            
             if protocol_type == "REALITY": config_secrt = "RLT"
-            proto_code = "UN"
-            if protocol_type in ["VLESS", "REALITY"]: proto_code = "VL"
-            elif protocol_type == "TROJAN": proto_code = "TR"
-            elif protocol_type == "VMESS": proto_code = "VM"
-            elif protocol_type == "SHADOWSOCKS": proto_code = "SS"
-            elif protocol_type == "HYSTERIA": proto_code = "HY"
-            elif protocol_type == "TUIC": proto_code = "TU"
-            elif protocol_type == "JUICITY": proto_code = "JU"
-            title = f"\U0001F512 {proto_code}-{config_type}-{config_secrt} {country_flag} {country_code}-{ip_display}:{port} \U0001F4E1 PING-{ping:06.2f}-MS"
-            final_config = parsed_url._replace(fragment=title).geturl()
+            
+            proto_code = {"VLESS":"VL","REALITY":"VL","TROJAN":"TR","VMESS":"VM","SHADOWSOCKS":"SS","HYSTERIA":"HY","TUIC":"TU","JUICITY":"JU"}.get(protocol_type, "UN")
+            title = f"\U0001F512 {proto_code}-{config_type}-{config_secrt} {country_flag}{country_code}-{ip_display}:{port} \U0001F4E1 PING-{ping:06.2f}-MS"
+            
+            # --- Rebuild Final Config ---
+            if protocol_type == "VMESS":
+                config['ps'] = title; config['add'] = ip_address
+                final_config = f"vmess://{base64.b64encode(json.dumps(config).encode('utf-8')).decode('utf-8')}"
+            else:
+                final_config = urlparse(element)._replace(fragment=title).geturl()
+
             modified_array.append(final_config)
             if config_secrt in ['TLS', 'RLT']: tls_array.append(final_config)
             else: non_tls_array.append(final_config)
             if config_type == 'TCP': tcp_array.append(final_config)
             elif config_type == 'WS': ws_array.append(final_config)
             elif config_type == 'GRPC': grpc_array.append(final_config)
+
         except Exception: continue
-    print(f"--- Finished processing for {protocol_type}. Found {len(modified_array)} live configs. ---")
+            
+    print(f"--- Finished processing for {protocol_type}. Found {len(modified_array)} configs. ---")
     return modified_array, tls_array, non_tls_array, tcp_array, ws_array, http_array, grpc_array
 
 def config_sort(array_configuration, bound_ping = 50):
+    # This function is correct.
     sort_init_list = []
     for config in array_configuration:
         try:
@@ -125,35 +144,29 @@ def config_sort(array_configuration, bound_ping = 50):
     forward_sorted.extend(reversed_sorted)
     return forward_sorted
     
-# --- THIS IS THE CRITICAL FIX ---
 def create_country(array_configuration):
-    """
-    Correctly extracts the country code from the config title after the flag emoji.
-    """
-    print("--- title.py: create_country START (v2 - Country Fix) ---")
+    # --- THIS IS THE CRITICAL COUNTRY FIX ---
+    print("--- title.py: create_country START (v4 - Ultimate Fix) ---")
     country_dict = {}
     for config in array_configuration:
         try:
-            # This new regex specifically looks for the two capital letters AFTER a country flag emoji.
-            # This is much more reliable.
-            match = re.search(r'(\U0001F1E6-\U0001F1FF)\s+([A-Z]{2})-', config, re.UNICODE)
+            # This regex looks for a flag emoji, then OPTIONALLY a space, then the country code
+            match = re.search(r'[\U0001F1E6-\U0001F1FF]{2}\s*([A-Z]{2})-', config)
             if match:
-                country_code = match.group(2).lower()
-                if country_code not in country_dict:
-                    country_dict[country_code] = []
+                country_code = match.group(1).lower()
+                if country_code not in country_dict: country_dict[country_code] = []
                 country_dict[country_code].append(config)
-        except:
-            continue
+        except: continue
     print(f"--- title.py: create_country END - Found {len(country_dict)} countries ---")
     return country_dict
 
-def create_title(title, port):
-    u=str(uuid.uuid4());rc=f"vless://{u}@127.0.0.1:{port}?security=tls&type=tcp#{title}";vc=f"vless://{u}@127.0.0.1:{port}?security=tls&type=tcp#{title}";vmc=f'vmess://{base64.b64encode(json.dumps({"add":"127.0.0.1","port":port,"ps":title,"id":u}).encode("utf-8")).decode("utf-8")}';tc=f"trojan://{u}@127.0.0.1:{port}?security=tls&type=tcp#{title}";sc=f"ss://{base64.b64encode(f'aes-256-gcm:{u}'.encode('utf-8')).decode('utf-8')}@127.0.0.1:{port}#{title}";return rc,vc,vmc,tc,sc
+def create_title(t,p):u=str(uuid.uuid4());rc=f"vless://{u}@127.0.0.1:{p}?security=tls&type=tcp#{t}";vc=f"vless://{u}@127.0.0.1:{p}?security=tls&type=tcp#{t}";vmc=f'vmess://{base64.b64encode(json.dumps({"add":"127.0.0.1","port":p,"ps":t,"id":u}).encode("utf-8")).decode("utf-8")}';tc=f"trojan://{u}@127.0.0.1:{p}?security=tls&type=tcp#{t}";sc=f"ss://{base64.b64encode(f'aes-256-gcm:{u}'.encode('utf-8')).decode('utf-8')}@127.0.0.1:{p}#{t}";return rc,vc,vmc,tc,sc
 
+# Preserving your other functions
 def create_country_table(p): return ""
 def create_internet_protocol(a): return [],[]
 def remove_duplicate(s,t,v,vl,r,tu,h,j,**k): return list(set(s)),list(set(t)),list(set(v)),list(set(vl)),list(set(r)),list(set(tu)),list(set(h)),list(set(j))
 def remove_duplicate_modified(a): return list(set(a))
 def decode_vmess(c): return c
 
-print("--- title.py: SCRIPT LOADED (v2 - Country Fix) ---")
+print("--- title.py: SCRIPT LOADED (v4 - Ultimate Fix) ---")
