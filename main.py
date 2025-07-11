@@ -1,8 +1,15 @@
-# FINAL HYBRID SCRIPT v7: With Correct Protocol Separation
-import os, json, re, base64, time, traceback
+# FINAL HYBRID SCRIPT v8: With Correct Imports and Logic
+import os
+import json
+import re
+import base64
+import time
+import traceback
 import requests
 import jdatetime
+from datetime import datetime, timezone, timedelta # CRITICAL IMPORT, NOW RESTORED
 
+# --- Import all processing functions from your title.py ---
 try:
     from title import (
         check_modify_config, config_sort, create_country, create_country_table,
@@ -13,11 +20,13 @@ except ImportError as e:
     print(f"FATAL: 'title.py' is missing or has an error. It's required for this script. Error: {e}")
     exit(1)
 
+# --- Configuration (from GitHub Secrets) ---
 API_ID = os.environ.get('TELEGRAM_API_ID')
 API_HASH = os.environ.get('TELEGRAM_API_HASH')
 SESSION_STRING = os.environ.get('TELETHON_SESSION')
 CONFIG_CHUNK_SIZE = 111
 
+# --- Helper Functions ---
 def setup_directories():
     dirs = [
         './splitted', './subscribe', './channels', './security', './protocols',
@@ -88,7 +97,7 @@ def main():
                 except Exception as e:
                     print(f"--> ERROR scanning @{channel}: {e}")
                     invalid_channels.add(channel)
-    except Exception as e: print(f"FATAL: Could not connect to Telegram: {e}")
+    except Exception as e: print(f"WARNING: Could not connect to Telegram: {e}")
 
     print(f"\n--- Fetching {len(subs_links)} subscription links... ---")
     for link in subs_links:
@@ -114,7 +123,7 @@ def main():
     security = {'tls': [], 'non_tls': []}
     network = {'tcp': [], 'ws': [], 'grpc': [], 'http': []}
     
-    # --- THIS IS THE CRITICAL FIX FOR PROTOCOL SEPARATION ---
+    # Corrected protocol separation logic
     for p in protocols:
         configs_for_proto = []
         if p == "VLESS":
