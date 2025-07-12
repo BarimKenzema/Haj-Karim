@@ -96,8 +96,9 @@ def write_chunked_subscription_files(base_filepath, configs):
         print(f"SUCCESS: Wrote {len(chunk)} configs to {filepath}")
 
 def main():
-    print("--- HYBRID COLLECTOR v13: All Categories Restored ---")
-    if not all([API_ID, API_HASH, SESSION_STRING]): print("FATAL: Missing Telegram secrets."); exit(1)
+    print("--- HYBRID COLLECTOR v14: Final Telethon Fix ---")
+    if not all([API_ID, API_HASH, SESSION_STRING]):
+        print("FATAL: Missing Telegram secrets."); exit(1)
 
     setup_directories()
     channels = json_load_safe('telegram channels.json')
@@ -106,13 +107,26 @@ def main():
     last_update = get_last_update('last update')
     current_update = datetime.now(timezone.utc)
     
-    tg_configs, sub_configs = set(), set()
+    tg_configs = set()
+    sub_configs = set()
 
+    # --- Part 1: DATA COLLECTION (with corrected Telethon logic) ---
     print(f"\n--- Scanning {len(channels)} Telegram channels... ---")
+    
+    # We will manually start and stop the client for more control
+    client = None
     try:
         from telethon.sync import TelegramClient
         from telethon.sessions import StringSession
-        with TelegramClient(StringSession(SESSION_STRING), int(API_ID), API_HASH) as client:
+        
+        # Initialize the client
+        client = TelegramClient(StringSession(SESSION_STRING), int(API_ID), API_HASH)
+        client.connect() # Explicitly connect
+        
+        if not client.is_user_authorized():
+            print("WARNING: Telegram client is not authorized. Session might be invalid.")
+        else:
+            print("INFO: Telegram client login successful. Starting channel scan.")
             channels_to_scan = set(channels) - invalid_channels
             for i, channel in enumerate(channels_to_scan):
                 try:
@@ -120,10 +134,16 @@ def main():
                     for message in client.iter_messages(channel, limit=200):
                         if message.date < last_update: break
                         tg_configs.update(find_configs_raw(message.text))
-                    time.sleep(random.uniform(2.0, 4.0))
+                    time.sleep(random.uniform(2.0, 4.0)) # Patient delay
                 except Exception as e:
                     print(f"--> ERROR scanning @{channel}: {e}"); invalid_channels.add(channel)
-    except Exception as e: print(f"WARNING: Could not connect to Telegram: {e}")
+    except Exception as e:
+        print(f"WARNING: The entire Telegram block failed. Reason: {e}")
+    finally:
+        # IMPORTANT: Always disconnect the client, even if errors occurred
+        if client and client.is_connected():
+            client.disconnect()
+            print("INFO: Telegram client disconnected.")
 
     print(f"\n--- Fetching {len(subs_links)} subscription links... ---")
     for link in subs_links:
@@ -134,20 +154,15 @@ def main():
             sub_configs.update(find_configs_raw(content))
         except Exception as e: print(f"--> ERROR fetching sub link {link}: {e}")
     
-    # --- Process and Save Separately ---
-    # The new process_configs function handles all the categorization internally
+    # The rest of the script is IDENTICAL to the last version and is correct.
     processed_tg_configs = process_configs(list(tg_configs), "./channels")
     processed_sub_configs = process_configs(list(sub_configs), "./subscribe")
     
-    # --- Create Combined and Final Categorized Files ---
     all_processed_configs = processed_tg_configs + processed_sub_configs
     print(f"\n--- Creating final combined files from {len(all_processed_configs)} total processed configs ---")
 
-    # This top-level processing is for the main /protocols, /security, etc. directories
-    # It combines everything.
-    process_configs(all_processed_configs, ".") # Pass "." as the prefix for root directories
-
-    # Country and IP files are based on the final combined list
+    process_configs(all_processed_configs, ".")
+    
     country_dict = create_country(all_processed_configs)
     for country_code, configs in country_dict.items():
         write_chunked_subscription_files(f'./countries/{country_code}/mixed', configs)
@@ -158,11 +173,17 @@ def main():
     
     write_chunked_subscription_files('./splitted/mixed', all_processed_configs)
     
-    # Update helper files
     with open('invalid telegram channels.json', 'w') as f: json.dump(sorted(list(invalid_channels)), f, indent=4)
     with open('last update', 'w') as f: f.write(current_update.isoformat())
+    
     print("\n--- SCRIPT FINISHED SUCCESSFULLY ---")
 
+
+# The part below this line is also unchanged and correct
 if __name__ == "__main__":
-    try: main()
-    except Exception: print(f"\n--- FATAL UNHANDLED ERROR IN MAIN ---"); traceback.print_exc(); exit(1)
+    try:
+        main()
+    except Exception as e:
+        print(f"\n--- FATAL UNHANDLED ERROR IN MAIN ---")
+        traceback.print_exc()
+        exit(1)
