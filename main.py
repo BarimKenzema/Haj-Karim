@@ -1,27 +1,22 @@
-# Meticulous Anonymous Scraper v1
+# FINAL HYBRID SCRIPT v11: Separate Categories, Patient & Robust
 import os, json, re, base64, time, traceback, random
 from datetime import datetime, timezone, timedelta
 import requests
-from bs4 import BeautifulSoup
 import jdatetime
 
 try:
-    from title import (
-        check_modify_config, config_sort, create_country, create_country_table,
-        create_internet_protocol, remove_duplicate, decode_vmess, create_title
-    )
+    from title import check_modify_config, config_sort, create_country, create_internet_protocol
     print("INFO: Successfully imported processing functions from title.py")
 except ImportError as e:
-    print(f"FATAL: 'title.py' is missing or has an error. It's required. Error: {e}")
-    exit(1)
+    print(f"FATAL: 'title.py' is missing or has an error. Error: {e}"); exit(1)
 
+API_ID = os.environ.get('TELEGRAM_API_ID')
+API_HASH = os.environ.get('TELEGRAM_API_HASH')
+SESSION_STRING = os.environ.get('TELETHON_SESSION')
 CONFIG_CHUNK_SIZE = 111
 
 def setup_directories():
-    dirs = [
-        './splitted', './subscribe', './channels', './security', './protocols',
-        './networks', './layers', './countries'
-    ]
+    dirs = ['./splitted', './subscribe', './channels', './security', './protocols', './networks', './layers', './countries']
     for d in dirs: os.makedirs(d, exist_ok=True)
     for parent in ['subscribe', 'channels']:
         for sub in ['protocols', 'networks', 'security', 'layers']:
@@ -43,102 +38,85 @@ def find_configs_raw(text):
     pattern = r'(?:vless|vmess|trojan|ss|hy2|hysteria|tuic|juicity)://[^\s<>"\'`]+'
     return re.findall(pattern, text, re.IGNORECASE)
 
-def tg_channel_messages(channel_user):
-    try:
-        print(f"Scraping channel: @{channel_user}")
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36'}
-        response = requests.get(f"https://t.me/s/{channel_user}", timeout=20, headers=headers)
-        response.raise_for_status()
-        soup = BeautifulSoup(response.text, "html.parser")
-        return soup.find_all("div", class_="tgme_widget_message")
-    except requests.exceptions.RequestException as e:
-        print(f"--> ERROR fetching channel @{channel_user}: {e}")
-        return []
-
-def tg_message_time(div_message):
-    try:
-        time_tag = div_message.find('time', datetime=True)
-        return datetime.fromisoformat(time_tag['datetime']).astimezone(timezone.utc)
-    except: return datetime.fromtimestamp(0, tz=timezone.utc)
-
-def tg_message_text(div_message):
-    try:
-        text_div = div_message.find("div", class_="tgme_widget_message_text")
-        return text_div.get_text(separator='\n') if text_div else ""
-    except: return ""
+def process_and_save_configs(config_list, output_prefix):
+    print(f"\n--- Processing {len(config_list)} configs for source: {output_prefix} ---")
+    if not config_list: return
     
-def write_chunked_subscription_files(base_filepath, configs, is_b64=True):
+    protocols = ["SHADOWSOCKS", "TROJAN", "VMESS", "VLESS", "REALITY", "TUIC", "HYSTERIA", "JUICITY"]
+    
+    for p in protocols:
+        configs_for_proto = [c for c in config_list if p.lower() in c.split('://')[0].lower()]
+        if p == "HYSTERIA": configs_for_proto = [c for c in config_list if c.startswith('hy')]
+        if p == "VLESS": configs_for_proto = [c for c in configs_for_proto if 'reality' not in c]
+        if p == "REALITY": configs_for_proto = [c for c in config_list if c.startswith('vless') and 'reality' in c]
+
+        processed_configs, *_ = check_modify_config(configs_for_proto, p, check_connection=False)
+        write_chunked_subscription_files(f"{output_prefix}/protocols/{p.lower()}", processed_configs)
+
+def write_chunked_subscription_files(base_filepath, configs):
     os.makedirs(os.path.dirname(base_filepath), exist_ok=True)
     if not configs:
-        with open(base_filepath, "w") as f: f.write("")
-        return
+        with open(base_filepath, "w") as f: f.write(""); return
+    
     sorted_configs = config_sort(configs)
     chunks = [sorted_configs[i:i + CONFIG_CHUNK_SIZE] for i in range(0, len(sorted_configs), CONFIG_CHUNK_SIZE)]
+    
     for i, chunk in enumerate(chunks):
         filepath = base_filepath if i == 0 else os.path.join(os.path.dirname(base_filepath), f"{os.path.basename(base_filepath)}{i + 1}")
-        content = "\n".join(chunk)
-        if is_b64: content = base64.b64encode(content.encode("utf-8")).decode("utf-8")
+        content = base64.b64encode("\n".join(chunk).encode("utf-8")).decode("utf-8")
         with open(filepath, "w", encoding="utf-8") as f: f.write(content)
         print(f"SUCCESS: Wrote {len(chunk)} configs to {filepath}")
 
 def main():
-    print("--- METICULOUS ANONYMOUS SCRAPER START ---")
+    print("--- HYBRID COLLECTOR v11: Final ---")
+    if not all([API_ID, API_HASH, SESSION_STRING]): print("FATAL: Missing Telegram secrets."); exit(1)
+
     setup_directories()
-    
     channels = json_load_safe('telegram channels.json')
     subs_links = json_load_safe('subscription links.json')
+    invalid_channels = set(json_load_safe('invalid telegram channels.json'))
     last_update = get_last_update('last update')
     current_update = datetime.now(timezone.utc)
-    all_raw_configs = set()
+    
+    tg_configs, sub_configs = set(), set()
 
-    # Part 1: DATA COLLECTION
     print(f"\n--- Scanning {len(channels)} Telegram channels... ---")
-    for channel in channels:
-        messages = tg_channel_messages(channel)
-        for message in messages:
-            if tg_message_time(message) > last_update:
-                all_raw_configs.update(find_configs_raw(tg_message_text(message)))
-        # Meticulous delay
-        time.sleep(random.uniform(1.0, 3.0))
+    try:
+        from telethon.sync import TelegramClient
+        from telethon.sessions import StringSession
+        with TelegramClient(StringSession(SESSION_STRING), int(API_ID), API_HASH) as client:
+            channels_to_scan = set(channels) - invalid_channels
+            for i, channel in enumerate(channels_to_scan):
+                try:
+                    print(f"Scanning @{channel} ({i+1}/{len(channels_to_scan)})...")
+                    for message in client.iter_messages(channel, limit=200):
+                        if message.date < last_update: break
+                        tg_configs.update(find_configs_raw(message.text))
+                    time.sleep(random.uniform(2.0, 4.0))
+                except Exception as e:
+                    print(f"--> ERROR scanning @{channel}: {e}"); invalid_channels.add(channel)
+    except Exception as e: print(f"WARNING: Could not connect to Telegram: {e}")
 
     print(f"\n--- Fetching {len(subs_links)} subscription links... ---")
     for link in subs_links:
         try:
-            content = requests.get(link, timeout=15, headers={'User-Agent': 'Mozilla/5.0'}).text
+            content = requests.get(link, timeout=15).text
             try: content = base64.b64decode(content).decode('utf-8')
             except: pass
-            all_raw_configs.update(find_configs_raw(content))
-        except Exception as e:
-            print(f"--> ERROR fetching sub link {link}: {e}")
-
-    final_configs_to_process = list(all_raw_configs)
-    print(f"\n--- Found {len(final_configs_to_process)} total raw configs. Starting processing... ---")
-    if not final_configs_to_process:
-        with open('last update', 'w') as f: f.write(current_update.isoformat()); return
-
-    # Part 2: DATA PROCESSING
-    protocols = ["SHADOWSOCKS", "TROJAN", "VMESS", "VLESS", "REALITY", "TUIC", "HYSTERIA", "JUICITY"]
-    processed = {p: [] for p in protocols}
-    for p in protocols:
-        configs_for_proto = [c for c in final_configs_to_process if p.lower() in c.split('://')[0].lower()]
-        if p == "HYSTERIA": configs_for_proto = [c for c in final_configs_to_process if c.startswith('hy')]
-        if p == "VLESS": configs_for_proto = [c for c in configs_for_proto if 'reality' not in c]
-        if p == "REALITY": configs_for_proto = [c for c in final_configs_to_process if c.startswith('vless') and 'reality' in c]
-            
-        p_mod, *_ = check_modify_config(configs_for_proto, p, check_connection=False)
-        processed[p].extend(p_mod)
-
-    # Part 3: FILE WRITING
-    for p_name, p_configs in processed.items():
-        write_chunked_subscription_files(f"./protocols/{p_name.lower()}", p_configs)
-
+            sub_configs.update(find_configs_raw(content))
+        except Exception as e: print(f"--> ERROR fetching sub link {link}: {e}")
+    
+    process_and_save_configs(list(tg_configs), "./channels")
+    process_and_save_configs(list(sub_configs), "./subscribe")
+    
+    all_configs = list(tg_configs.union(sub_configs))
+    all_processed, *_ = check_modify_config(all_configs, "VLESS", check_connection=False)
+    write_chunked_subscription_files("./splitted/mixed", all_processed)
+    
+    with open('invalid telegram channels.json', 'w') as f: json.dump(sorted(list(invalid_channels)), f, indent=4)
     with open('last update', 'w') as f: f.write(current_update.isoformat())
     print("\n--- SCRIPT FINISHED SUCCESSFULLY ---")
 
 if __name__ == "__main__":
-    try:
-        main()
-    except Exception as e:
-        print(f"\n--- FATAL UNHANDLED ERROR IN MAIN ---")
-        traceback.print_exc()
-        exit(1)
+    try: main()
+    except Exception: print(f"\n--- FATAL UNHANDLED ERROR IN MAIN ---"); traceback.print_exc(); exit(1)
