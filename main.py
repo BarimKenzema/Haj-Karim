@@ -16,7 +16,7 @@ except ImportError as e:
 API_ID = os.environ.get('TELEGRAM_API_ID')
 API_HASH = os.environ.get('TELEGRAM_API_HASH')
 SESSION_STRING = os.environ.get('TELETHON_SESSION')
-CONFIG_CHUNK_SIZE = 111
+CONFIG_CHUNK_SIZE = 444
 
 def setup_directories():
     dirs = ['./splitted', './subscribe', './channels', './security', './protocols', './networks', './layers', './countries']
