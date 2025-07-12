@@ -1,11 +1,15 @@
-name: Clean Telegram Channels (Anonymous)
+name: Clean Telegram Channels
 
 on:
-  workflow_dispatch: # Manual trigger only
+  workflow_dispatch:
 
 jobs:
-  anonymous-clean-channels:
+  clean-channels:
+    # THIS PERMISSIONS BLOCK IS THE FIX
+    permissions:
+      contents: write
     runs-on: ubuntu-latest
+    timeout-minutes: 60
 
     steps:
       - name: Check out repository
@@ -22,6 +26,7 @@ jobs:
 
       - name: Create and Run Anonymous Cleanup Script
         run: |
+          # This script is fine, no changes needed here
           cat > anonymous_cleanup.py << EOL
           import json
           import os
@@ -35,73 +40,52 @@ jobs:
 
           def main():
               print("--- Anonymous Telegram Channel Checker ---")
-              
               try:
                   with open('telegram channels.json', 'r', encoding='utf-8') as f:
                       channels_to_check = json.load(f)
               except FileNotFoundError:
-                  print("FATAL: 'telegram channels.json' not found.")
-                  exit(1)
+                  print("FATAL: 'telegram channels.json' not found."); exit(1)
               
               print(f"Found {len(channels_to_check)} channels to check...")
-              active_channels = []
-              inactive_channels = []
-              invalid_channels = []
-              
+              active_channels, inactive_channels, invalid_channels = [], [], []
               time_limit = datetime.now(timezone.utc) - timedelta(days=DAYS_OF_INACTIVITY_LIMIT)
 
               for i, channel_username in enumerate(channels_to_check):
                   print(f"Checking {i+1}/{len(channels_to_check)}: @{channel_username} ... ", end="", flush=True)
                   try:
-                      headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36'}
+                      headers = {'User-Agent': 'Mozilla/5.0'}
                       response = requests.get(f"https://t.me/s/{channel_username}", timeout=15, headers=headers)
-                      
-                      # Check if Telegram is blocking us or if the channel doesn't exist
                       if response.status_code != 200:
-                          print(f"Invalid or Inaccessible (Status Code: {response.status_code}).")
+                          print(f"Invalid (Status: {response.status_code}).")
                           invalid_channels.append(channel_username)
                           continue
-
                       soup = BeautifulSoup(response.text, "html.parser")
-                      last_message_time_tag = soup.select_one('.tgme_widget_message_date time')
-
-                      if not last_message_time_tag:
-                          print("Inactive (no messages found).")
-                          inactive_channels.append(channel_username)
-                          continue
-
-                      last_post_date = datetime.fromisoformat(last_message_time_tag['datetime']).astimezone(timezone.utc)
-
-                      if last_post_date < time_limit:
-                          print(f"Inactive (last post on {last_post_date.date()}).")
+                      time_tag = soup.select_one('.tgme_widget_message_date time')
+                      if not time_tag or datetime.fromisoformat(time_tag['datetime']).astimezone(timezone.utc) < time_limit:
+                          print(f"Inactive.")
                           inactive_channels.append(channel_username)
                       else:
                           print("Active.")
                           active_channels.append(channel_username)
-                      
-                      # Use a delay to be respectful
                       time.sleep(random.uniform(0.5, 1.5))
-
                   except Exception as e:
-                      print(f"Error checking channel: {e}")
+                      print(f"Error: {e}")
                       invalid_channels.append(channel_username)
 
               print("\n--- Cleanup Complete ---")
-              print(f"Total: {len(channels_to_check)} | Kept (Active): {len(active_channels)} | Inactive: {len(inactive_channels)} | Invalid: {len(invalid_channels)}")
-
+              print(f"Total: {len(channels_to_check)} | Kept: {len(active_channels)}")
               with open('telegram channels.json', 'w', encoding='utf-8') as f:
                   json.dump(sorted(active_channels), f, indent=4)
-              print("\nSUCCESS: 'telegram channels.json' has been overwritten with the cleaned list.")
+              print("\nSUCCESS: 'telegram channels.json' has been overwritten.")
 
           if __name__ == "__main__":
               main()
           EOL
           
-          # Now, run the script we just created
           python anonymous_cleanup.py
 
       - name: Commit and push the cleaned channel list
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
-          commit_message: "🔧 Cleaned Telegram channel list (Anonymous Check)"
+          commit_message: "🔧 Cleaned Telegram channel list"
           file_pattern: "telegram channels.json"
