@@ -1,0 +1,104 @@
+name: Clean Telegram Channels
+
+# This allows you to run it manually from the Actions tab
+on:
+  workflow_dispatch:
+
+jobs:
+  clean-channels:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install telethon
+
+      - name: Create and run the cleanup script
+        env:
+          # Pass your secrets to the script
+          TELEGRAM_API_ID: ${{ secrets.TELEGRAM_API_ID }}
+          TELEGRAM_API_HASH: ${{ secrets.TELEGRAM_API_HASH }}
+          TELETHON_SESSION: ${{ secrets.TELETHON_SESSION }}
+        run: |
+          # This block creates the python script dynamically inside the Action
+          cat > clean_channels.py << EOL
+          import json
+          import os
+          from datetime import datetime, timedelta, timezone
+          from telethon.sync import TelegramClient
+          from telethon.sessions import StringSession
+          from telethon.errors.rpcerrorlist import ChannelPrivateError, ChannelInvalidError, FloodWaitError
+          import time
+
+          API_ID = os.environ.get('TELEGRAM_API_ID')
+          API_HASH = os.environ.get('TELEGRAM_API_HASH')
+          SESSION_STRING = os.environ.get('TELETHON_SESSION')
+          DAYS_OF_INACTIVITY_LIMIT = 4
+
+          def main():
+              print("--- Telegram Channel Cleaner ---")
+              
+              if not all([API_ID, API_HASH, SESSION_STRING]):
+                  print("FATAL: Missing one or more required secrets. Please set them in repository Settings.")
+                  exit(1)
+
+              try:
+                  with open('telegram channels.json', 'r', encoding='utf-8') as f:
+                      channels_to_check = json.load(f)
+              except FileNotFoundError:
+                  print("FATAL: 'telegram channels.json' not found.")
+                  exit(1)
+              
+              print(f"Found {len(channels_to_check)} channels to check...")
+              active_channels = []
+              
+              with TelegramClient(StringSession(SESSION_STRING), int(API_ID), API_HASH) as client:
+                  print("Login successful. Starting channel check...")
+                  time_limit = datetime.now(timezone.utc) - timedelta(days=DAYS_OF_INACTIVITY_LIMIT)
+
+                  for i, channel_username in enumerate(channels_to_check):
+                      print(f"Checking {i+1}/{len(channels_to_check)}: @{channel_username} ... ", end="", flush=True)
+                      try:
+                          last_message = client.get_messages(channel_username, limit=1)
+                          if not last_message or last_message[0].date < time_limit:
+                              print("Inactive or too old.")
+                          else:
+                              print("Active.")
+                              active_channels.append(channel_username)
+                          time.sleep(1) # Be respectful to the API
+                      except (ChannelPrivateError, ChannelInvalidError, ValueError):
+                          print("Invalid or Inaccessible.")
+                      except FloodWaitError as e:
+                          print(f"FLOOD WAIT of {e.seconds}s. Aborting.")
+                          break
+                      except Exception as e:
+                          print(f"Error: {e}")
+
+              print("\n--- Cleanup Complete ---")
+              print(f"Kept {len(active_channels)} active channels.")
+
+              # Overwrite the original file with the cleaned list
+              with open('telegram channels.json', 'w', encoding='utf-8') as f:
+                  json.dump(sorted(active_channels), f, indent=4)
+              print("\nSUCCESS: 'telegram channels.json' has been overwritten with the cleaned list.")
+
+          if __name__ == "__main__":
+              main()
+          EOL
+          
+          # Now, run the script we just created
+          python clean_channels.py
+
+      - name: Commit and push the cleaned channel list
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "✅ Cleaned Telegram channel list"
+          file_pattern: "telegram channels.json" # Only commit this one file
