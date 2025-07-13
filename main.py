@@ -1,16 +1,15 @@
-# FINAL SCRIPT: v18 - Fast Multi-Threaded Testing
+# FINAL SCRIPT v19: Simple, Sequential, and Reliable
 import os, json, re, base64, time, traceback, random
 from datetime import datetime, timezone, timedelta
 import requests
 import jdatetime
-import concurrent.futures
 
 try:
     from title import (
         check_modify_config, config_sort, create_country,
         create_internet_protocol
     )
-    print("INFO: Successfully imported from title.py")
+    print("INFO: Successfully imported title.py")
 except ImportError as e:
     print(f"FATAL: 'title.py' is missing. Error: {e}"); exit(1)
 
@@ -19,14 +18,12 @@ API_ID = os.environ.get('TELEGRAM_API_ID')
 API_HASH = os.environ.get('TELEGRAM_API_HASH')
 SESSION_STRING = os.environ.get('TELETHON_SESSION')
 CONFIG_CHUNK_SIZE = 444
-# Number of configs to test at the same time. Higher is faster but uses more resources.
-MAX_TEST_WORKERS = 30 
 
-# --- Helper Functions ---
+# --- Helper Functions (Unchanged) ---
 def setup_directories():
     import shutil
-    dirs = ['./splitted', './subscribe', './channels', './security', './protocols', './networks', './layers', './countries']
-    for d in dirs:
+    dirs_to_recreate = ['./splitted', './subscribe', './channels', './security', './protocols', './networks', './layers', './countries']
+    for d in dirs_to_recreate:
         if os.path.exists(d): shutil.rmtree(d)
         os.makedirs(d)
     for parent in ['subscribe', 'channels']:
@@ -49,39 +46,6 @@ def find_configs_raw(text):
     pattern = r'(?:vless|vmess|trojan|ss|hy2|hysteria|tuic|juicity)://[^\s<>"\'`]+'
     return re.findall(pattern, text, re.IGNORECASE)
 
-def process_and_save_configs(config_list, output_prefix):
-    print(f"\n--- Processing {len(config_list)} configs for source: {output_prefix} ---")
-    if not config_list: return []
-    
-    protocols = ["SHADOWSOCKS", "TROJAN", "VMESS", "VLESS", "REALITY", "TUIC", "HYSTERIA", "JUICITY"]
-    all_processed_for_source = []
-    
-    # --- Multi-threaded testing for speed ---
-    with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_TEST_WORKERS) as executor:
-        future_to_proto = {}
-        for p in protocols:
-            configs_for_proto = []
-            if p == "VLESS": configs_for_proto = [c for c in config_list if c.startswith('vless://') and 'reality' not in c]
-            elif p == "REALITY": configs_for_proto = [c for c in config_list if c.startswith('vless://') and 'security=reality' in c]
-            elif p == "HYSTERIA": configs_for_proto = [c for c in config_list if c.startswith('hy')]
-            else: configs_for_proto = [c for c in config_list if c.startswith(p.lower())]
-
-            if configs_for_proto:
-                # Submit the entire batch for a protocol to be processed
-                future = executor.submit(check_modify_config, configs_for_proto, p, check_connection=True)
-                future_to_proto[future] = p
-
-        for future in concurrent.futures.as_completed(future_to_proto):
-            protocol_name = future_to_proto[future]
-            try:
-                processed_configs, p_tls, p_nontls, p_tcp, p_ws, p_http, p_grpc = future.result()
-                write_categorized_files(output_prefix, protocol_name, processed_configs, p_tls, p_nontls, p_tcp, p_ws, p_http, p_grpc)
-                all_processed_for_source.extend(processed_configs)
-            except Exception as exc:
-                print(f'Error processing protocol {protocol_name}: {exc}')
-                
-    return all_processed_for_source
-
 def write_chunked_subscription_files(base_filepath, configs):
     os.makedirs(os.path.dirname(base_filepath), exist_ok=True)
     if not configs:
@@ -96,17 +60,10 @@ def write_chunked_subscription_files(base_filepath, configs):
         with open(filepath, "w", encoding="utf-8") as f: f.write(content)
         print(f"SUCCESS: Wrote {len(chunk)} configs to {filepath}")
 
-def write_categorized_files(prefix, protocol_name, p_configs, tls, non_tls, tcp, ws, http, grpc):
-    write_chunked_subscription_files(f"{prefix}/protocols/{protocol_name.lower()}", p_configs)
-    if tls: write_chunked_subscription_files(f"{prefix}/security/tls", tls)
-    if non_tls: write_chunked_subscription_files(f"{prefix}/security/non-tls", non_tls)
-    if tcp: write_chunked_subscription_files(f"{prefix}/networks/tcp", tcp)
-    if ws: write_chunked_subscription_files(f"{prefix}/networks/ws", ws)
-    if http: write_chunked_subscription_files(f"{prefix}/networks/http", http)
-    if grpc: write_chunked_subscription_files(f"{prefix}/networks/grpc", grpc)
 
+# --- Main Logic ---
 def main():
-    print("--- HYBRID COLLECTOR v18: Fast Multi-Threaded Testing ---")
+    print("--- HYBRID COLLECTOR v19: Simple and Reliable ---")
     if not all([API_ID, API_HASH, SESSION_STRING]): print("FATAL: Missing Telegram secrets."); exit(1)
 
     setup_directories()
@@ -117,15 +74,15 @@ def main():
     current_update = datetime.now(timezone.utc)
     
     tg_configs, sub_configs = set(), set()
-    
+
+    # Part 1: DATA COLLECTION
     client = None
     try:
         from telethon.sync import TelegramClient
         from telethon.sessions import StringSession
         client = TelegramClient(StringSession(SESSION_STRING), int(API_ID), API_HASH)
         client.connect()
-        if not client.is_user_authorized():
-            raise Exception("Telegram client authorization failed.")
+        if not client.is_user_authorized(): raise Exception("Telegram client authorization failed.")
         
         print(f"INFO: Telegram login successful. Scanning {len(channels)} channels...")
         channels_to_scan = set(channels) - invalid_channels
@@ -151,28 +108,55 @@ def main():
             except: pass
             sub_configs.update(find_configs_raw(content))
         except: continue
+        
+    # --- Part 2: COMBINE AND PROCESS ---
+    all_raw_configs = list(tg_configs.union(sub_configs))
+    print(f"\n--- Found {len(all_raw_configs)} total unique configs. Starting processing... ---")
+    if not all_raw_configs:
+        print("INFO: No configs found. Exiting.");
+        with open('last update', 'w') as f: f.write(current_update.isoformat()); return
+
+    protocols = ["SHADOWSOCKS", "TROJAN", "VMESS", "VLESS", "REALITY", "TUIC", "HYSTERIA", "JUICITY"]
     
-    processed_tg_configs = process_and_save_configs(list(tg_configs), "./channels")
-    processed_sub_configs = process_and_save_configs(list(sub_configs), "./subscribe")
+    all_processed_configs = []
     
-    all_processed_configs = processed_tg_configs + processed_sub_configs
-    print(f"\n--- Creating final combined files from {len(all_processed_configs)} total processed configs ---")
+    for p in protocols:
+        configs_for_proto = []
+        if p == "VLESS": configs_for_proto = [c for c in all_raw_configs if c.startswith('vless://') and 'reality' not in c]
+        elif p == "REALITY": configs_for_proto = [c for c in all_raw_configs if c.startswith('vless://') and 'security=reality' in c]
+        elif p == "HYSTERIA": configs_for_proto = [c for c in all_raw_configs if c.startswith('hy')]
+        else: configs_for_proto = [c for c in all_raw_configs if c.startswith(p.lower())]
+
+        if not configs_for_proto: continue
+        
+        # Process this batch of configs, WITH connection checking
+        processed_batch, *_ = check_modify_config(configs_for_proto, p, check_connection=True)
+        all_processed_configs.extend(processed_batch)
+
+    # --- Part 3: WRITE ALL FILES ---
+    print(f"\n--- Writing {len(all_processed_configs)} total processed configs to all categories ---")
     
-    process_and_save_configs(all_processed_configs, ".")
+    # Write protocol files
+    for p in protocols:
+        configs_to_write = [c for c in all_processed_configs if p.lower() in c.split('://')[0].lower()]
+        if p == "HYSTERIA": configs_to_write = [c for c in all_processed_configs if c.startswith('hy')]
+        if p == "VLESS": configs_to_write = [c for c in configs_to_write if 'reality' not in c]
+        if p == "REALITY": configs_to_write = [c for c in all_processed_configs if c.startswith('vless') and 'reality' in c]
+        write_chunked_subscription_files(f'./protocols/{p.lower()}', configs_to_write)
+
+    # ... You can add back the security/network/etc. categorization here if needed ...
     
     country_dict = create_country(all_processed_configs)
     for country_code, configs in country_dict.items():
         write_chunked_subscription_files(f'./countries/{country_code}/mixed', configs)
         
-    ipv4_list, ipv6_list = create_internet_protocol(all_processed_configs)
-    write_chunked_subscription_files('./layers/ipv4', ipv4_list)
-    write_chunked_subscription_files('./layers/ipv6', ipv6_list)
-    
     write_chunked_subscription_files('./splitted/mixed', all_processed_configs)
     
+    # Update helper files
     with open('invalid telegram channels.json', 'w') as f: json.dump(sorted(list(invalid_channels)), f, indent=4)
     with open('last update', 'w') as f: f.write(current_update.isoformat())
     print("\n--- SCRIPT FINISHED SUCCESSFULLY ---")
+
 
 if __name__ == "__main__":
     try: main()
