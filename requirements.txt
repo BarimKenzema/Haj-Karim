@@ -7,4 +7,4 @@ geoip2
 dnspython
 requests
 telethon
-python-tcp-ping
+dnspython
