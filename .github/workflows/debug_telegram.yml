@@ -1,0 +1,64 @@
+name: Debug Telegram Connection
+
+on:
+  workflow_dispatch: # Manual trigger only
+
+jobs:
+  debug-telethon:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Telethon
+        run: pip install telethon
+
+      - name: Run Telegram Debug Script
+        env:
+          TELEGRAM_API_ID: ${{ secrets.TELEGRAM_API_ID }}
+          TELEGRAM_API_HASH: ${{ secrets.TELEGRAM_API_HASH }}
+          TELETHON_SESSION: ${{ secrets.TELETHON_SESSION }}
+        run: |
+          cat > debug.py << EOL
+          import os
+          import json
+          from telethon.sync import TelegramClient
+          from telethon.sessions import StringSession
+
+          API_ID = os.environ.get('TELEGRAM_API_ID')
+          API_HASH = os.environ.get('TELEGRAM_API_HASH')
+          SESSION_STRING = os.environ.get('TELETHON_SESSION')
+
+          if not all([API_ID, API_HASH, SESSION_STRING]):
+              print("FATAL: Missing secrets.")
+              exit(1)
+
+          print("--- Attempting to connect to Telegram... ---")
+          client = TelegramClient(StringSession(SESSION_STRING), int(API_ID), API_HASH)
+          try:
+              client.connect()
+              if client.is_user_authorized():
+                  print("SUCCESS: Client is authorized and connected.")
+                  # Try to get info about one channel to test the connection
+                  try:
+                      channel_info = client.get_entity('v2ray_vpn_ir')
+                      print(f"SUCCESS: Fetched info for channel: {channel_info.title}")
+                  except Exception as e:
+                      print(f"WARNING: Could connect but failed to get channel info. Reason: {e}")
+              else:
+                  print("FATAL: Client connected but is NOT authorized. Your session string is likely invalid or expired.")
+          except Exception as e:
+              print(f"FATAL: Failed to connect to Telegram. Reason: {e}")
+          finally:
+              if client.is_connected():
+                  client.disconnect()
+                  print("--- Disconnected from Telegram. ---")
+          EOL
+          
+          python debug.py
