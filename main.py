@@ -152,6 +152,8 @@ def main():
     current_update = datetime.now(timezone.utc)
     
     tg_configs, sub_configs = set(), set()
+    
+    """
     client = None
     try:
         from telethon.sync import TelegramClient
@@ -174,7 +176,8 @@ def main():
     finally:
         if client and client.is_connected():
             client.disconnect(); print("INFO: Telegram client disconnected.")
-
+"""
+    
     for link in subs_links:
         try:
             content = requests.get(link, timeout=15).text
