@@ -1,15 +1,12 @@
-# FINAL HYBRID SCRIPT v15: Correct Telethon Scope
+# FINAL HYBRID SCRIPT v16: The definitive Telethon and Processing fix
 import os, json, re, base64, time, traceback, random
 from datetime import datetime, timezone, timedelta
 import requests
 import jdatetime
 
 try:
-    from title import (
-        check_modify_config, config_sort, create_country,
-        create_internet_protocol
-    )
-    print("INFO: Successfully imported processing functions from title.py")
+    from title import check_modify_config, config_sort, create_country, create_internet_protocol
+    print("INFO: Successfully imported title.py")
 except ImportError as e:
     print(f"FATAL: 'title.py' is missing. Error: {e}"); exit(1)
 
@@ -19,12 +16,15 @@ SESSION_STRING = os.environ.get('TELETHON_SESSION')
 CONFIG_CHUNK_SIZE = 444
 
 def setup_directories():
-    dirs = ['./splitted', './subscribe', './channels', './security', './protocols', './networks', './layers', './countries']
-    for d in dirs: os.makedirs(d, exist_ok=True)
+    dirs_to_recreate = ['./splitted', './subscribe', './channels', './security', './protocols', './networks', './layers', './countries']
+    import shutil
+    for d in dirs_to_recreate:
+        if os.path.exists(d): shutil.rmtree(d)
+        os.makedirs(d)
     for parent in ['subscribe', 'channels']:
         for sub in ['protocols', 'networks', 'security', 'layers']:
             os.makedirs(os.path.join(parent, sub), exist_ok=True)
-    print("INFO: All necessary directories are present.")
+    print("INFO: All necessary directories are clean and ready.")
 
 def json_load_safe(path):
     try:
@@ -44,7 +44,7 @@ def find_configs_raw(text):
 def process_and_save_configs(config_list, output_prefix):
     print(f"\n--- Processing {len(config_list)} configs for source: {output_prefix} ---")
     if not config_list: return []
-
+    
     protocols = ["SHADOWSOCKS", "TROJAN", "VMESS", "VLESS", "REALITY", "TUIC", "HYSTERIA", "JUICITY"]
     all_processed_for_source = []
     
@@ -54,10 +54,12 @@ def process_and_save_configs(config_list, output_prefix):
         elif p == "REALITY": configs_for_proto = [c for c in config_list if c.startswith('vless://') and 'security=reality' in c]
         elif p == "HYSTERIA": configs_for_proto = [c for c in config_list if c.startswith('hy')]
         else: configs_for_proto = [c for c in config_list if c.startswith(p.lower())]
-
+        
         if not configs_for_proto: continue
-        processed_configs, *_ = check_modify_config(configs_for_proto, p, check_connection=False)
-        write_chunked_subscription_files(f"{output_prefix}/protocols/{p.lower()}", processed_configs)
+        processed_configs, p_tls, p_nontls, p_tcp, p_ws, p_http, p_grpc = check_modify_config(configs_for_proto, p, check_connection=True)
+        
+        # This function writes the categorized files
+        write_categorized_files(output_prefix, p, processed_configs, p_tls, p_nontls, p_tcp, p_ws, p_http, p_grpc)
         all_processed_for_source.extend(processed_configs)
         
     return all_processed_for_source
@@ -76,8 +78,17 @@ def write_chunked_subscription_files(base_filepath, configs):
         with open(filepath, "w", encoding="utf-8") as f: f.write(content)
         print(f"SUCCESS: Wrote {len(chunk)} configs to {filepath}")
 
+def write_categorized_files(prefix, protocol_name, p_configs, tls, non_tls, tcp, ws, http, grpc):
+    write_chunked_subscription_files(f"{prefix}/protocols/{protocol_name.lower()}", p_configs)
+    write_chunked_subscription_files(f"{prefix}/security/tls", tls)
+    write_chunked_subscription_files(f"{prefix}/security/non-tls", non_tls)
+    write_chunked_subscription_files(f"{prefix}/networks/tcp", tcp)
+    write_chunked_subscription_files(f"{prefix}/networks/ws", ws)
+    write_chunked_subscription_files(f"{prefix}/networks/http", http)
+    write_chunked_subscription_files(f"{prefix}/networks/grpc", grpc)
+
 def main():
-    print("--- HYBRID COLLECTOR v15: Correct Telethon Scope ---")
+    print("--- HYBRID COLLECTOR v16: Definitive Fix ---")
     if not all([API_ID, API_HASH, SESSION_STRING]): print("FATAL: Missing Telegram secrets."); exit(1)
 
     setup_directories()
@@ -89,28 +100,36 @@ def main():
     
     tg_configs, sub_configs = set(), set()
 
-    # Part 1: DATA COLLECTION
+    # --- Part 1: DATA COLLECTION (Reliable Telethon method) ---
     print(f"\n--- Scanning {len(channels)} Telegram channels... ---")
+    client = None
     try:
         from telethon.sync import TelegramClient
         from telethon.sessions import StringSession
-        # The channel scanning loop is now INSIDE the 'with' block
-        with TelegramClient(StringSession(SESSION_STRING), int(API_ID), API_HASH) as client:
-            print("INFO: Telegram client login successful. Starting channel scan.")
-            channels_to_scan = set(channels) - invalid_channels
-            for i, channel in enumerate(channels_to_scan):
-                try:
-                    print(f"Scanning @{channel} ({i+1}/{len(channels_to_scan)})...")
-                    for message in client.iter_messages(channel, limit=200):
-                        if message.date < last_update: break
-                        tg_configs.update(find_configs_raw(message.text))
-                    time.sleep(random.uniform(2.0, 4.0))
-                except Exception as e:
-                    print(f"--> ERROR scanning @{channel}: {e}"); invalid_channels.add(channel)
-        print("INFO: Finished Telegram scan. Disconnecting client.")
-    except Exception as e: 
-        print(f"WARNING: The entire Telegram block failed. Reason: {e}")
+        client = TelegramClient(StringSession(SESSION_STRING), int(API_ID), API_HASH)
+        client.connect()
+        if not client.is_user_authorized():
+            raise Exception("Telegram client authorization failed. Session string might be invalid.")
+        
+        print("INFO: Telegram login successful. Starting scan.")
+        channels_to_scan = set(channels) - invalid_channels
+        for i, channel in enumerate(channels_to_scan):
+            try:
+                print(f"Scanning @{channel} ({i+1}/{len(channels_to_scan)})...")
+                for message in client.iter_messages(channel, limit=200):
+                    if message.date < last_update: break
+                    tg_configs.update(find_configs_raw(message.text))
+                time.sleep(random.uniform(2.0, 4.0))
+            except Exception as e:
+                print(f"--> ERROR scanning @{channel}: {e}"); invalid_channels.add(channel)
+    except Exception as e:
+        print(f"WARNING: Telegram collection block failed. Reason: {e}")
+    finally:
+        if client and client.is_connected():
+            client.disconnect()
+            print("INFO: Telegram client disconnected.")
 
+    # --- Subscription Link Collection ---
     print(f"\n--- Fetching {len(subs_links)} subscription links... ---")
     for link in subs_links:
         try:
@@ -120,15 +139,15 @@ def main():
             sub_configs.update(find_configs_raw(content))
         except Exception as e: print(f"--> ERROR fetching sub link {link}: {e}")
     
-    # Process and Save Separately
+    # --- Process and Save Separately ---
     processed_tg_configs = process_and_save_configs(list(tg_configs), "./channels")
     processed_sub_configs = process_and_save_configs(list(sub_configs), "./subscribe")
     
-    # Create Combined and Final Categorized Files
+    # --- Create Combined and Final Categorized Files ---
     all_processed_configs = processed_tg_configs + processed_sub_configs
     print(f"\n--- Creating final combined files from {len(all_processed_configs)} total processed configs ---")
     
-    process_and_save_configs(all_processed_configs, ".")
+    process_and_save_configs(all_processed_configs, ".") # This creates the root-level categorized files
     
     country_dict = create_country(all_processed_configs)
     for country_code, configs in country_dict.items():
@@ -142,7 +161,6 @@ def main():
     
     with open('invalid telegram channels.json', 'w') as f: json.dump(sorted(list(invalid_channels)), f, indent=4)
     with open('last update', 'w') as f: f.write(current_update.isoformat())
-    
     print("\n--- SCRIPT FINISHED SUCCESSFULLY ---")
 
 if __name__ == "__main__":
