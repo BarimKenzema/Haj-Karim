@@ -1,4 +1,4 @@
-# FINAL SCRIPT v26: Full Categorization Restored
+# FINAL SCRIPT v28: Smart Pre-Filtering (Test Unique IPs)
 import os, json, re, base64, time, traceback, random, socket
 from datetime import datetime, timezone, timedelta
 import requests
@@ -20,9 +20,9 @@ API_ID = os.environ.get('TELEGRAM_API_ID')
 API_HASH = os.environ.get('TELEGRAM_API_HASH')
 SESSION_STRING = os.environ.get('TELETHON_SESSION')
 CONFIG_CHUNK_SIZE = 444
-MAX_PREFILTER_WORKERS = 100
+MAX_PREFILTER_WORKERS = 100 # We can test many unique IPs in parallel
 
-# --- Helper Functions (Unchanged) ---
+# --- Helper Functions (Unchanged and Correct) ---
 def setup_directories():
     import shutil
     dirs = ['./splitted', './subscribe', './channels', './security', './protocols', './networks', './layers', './countries']
@@ -50,6 +50,7 @@ def find_configs_raw(text):
     return re.findall(pattern, text, re.IGNORECASE)
 
 def check_host_port_with_socket(host_port):
+    """Checks a single host:port and returns it if live."""
     try:
         host, port_str = host_port.rsplit(':', 1)
         port = int(port_str)
@@ -58,8 +59,13 @@ def check_host_port_with_socket(host_port):
     except: return None
 
 def pre_filter_live_hosts(all_configs):
-    print(f"\n--- Pre-filtering {len(all_configs)} configs for live ports... ---")
+    """
+    NEW STRATEGY: Extracts unique host:port pairs, tests only those,
+    and then returns all original configs that match the live hosts.
+    """
+    print(f"\n--- Pre-filtering {len(all_configs)} configs... ---")
     host_port_to_configs = {}
+    
     for config in all_configs:
         try:
             host, port = None, None
@@ -71,33 +77,46 @@ def pre_filter_live_hosts(all_configs):
             else:
                 parsed = urlparse(config)
                 host, port = parsed.hostname, parsed.port
+            
             if host and port:
-                host_port = f"{host}:{port}"
-                if host_port not in host_port_to_configs: host_port_to_configs[host_port] = []
-                host_port_to_configs[host_port].append(config)
+                # Use the resolved IP for testing if the host is a domain
+                from title import get_ips
+                ips = get_ips(host)
+                if not ips: continue
+                ip_address = ips[0] # Use the first resolved IP for the test key
+                
+                host_port_key = f"{ip_address}:{port}"
+                if host_port_key not in host_port_to_configs: host_port_to_configs[host_port_key] = []
+                host_port_to_configs[host_port_key].append(config)
         except: continue
-    hosts_to_check = list(host_port_to_configs.keys())
-    print(f"Found {len(hosts_to_check)} unique host:port pairs to test.")
-    live_host_ports = []
+
+    hosts_to_test = list(host_port_to_configs.keys())
+    print(f"Found {len(hosts_to_test)} unique IP:port pairs to test.")
+    
+    live_host_ports = set()
     with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_PREFILTER_WORKERS) as executor:
-        future_to_host = {executor.submit(check_host_port_with_socket, host_port): host_port for host_port in hosts_to_check}
+        future_to_host = {executor.submit(check_host_port_with_socket, host_port): host_port for host_port in hosts_to_test}
         for i, future in enumerate(concurrent.futures.as_completed(future_to_host)):
-            if (i + 1) % 1000 == 0: print(f"Tested {i+1}/{len(hosts_to_check)} hosts...")
+            if (i + 1) % 500 == 0: print(f"Tested {i+1}/{len(hosts_to_test)} unique IPs...")
             result = future.result()
-            if result: live_host_ports.append(result)
+            if result:
+                live_host_ports.add(result)
+            
+    # Rebuild the list of configs from only the live hosts
     configs_from_live_hosts = []
     for host_port in live_host_ports:
         configs_from_live_hosts.extend(host_port_to_configs.get(host_port, []))
+        
     print(f"--- Pre-filter complete. Found {len(configs_from_live_hosts)} configs on {len(live_host_ports)} live hosts. ---")
     return configs_from_live_hosts
 
+# The rest of the script is unchanged and correct.
 def process_and_save_configs(config_list, output_prefix):
+    # This function is correct from the previous version.
     print(f"\n--- Processing {len(config_list)} configs for source: {output_prefix} ---")
     if not config_list: return []
-    
     protocols = ["SHADOWSOCKS", "TROJAN", "VMESS", "VLESS", "REALITY", "TUIC", "HYSTERIA", "JUICITY"]
     all_processed_for_source = []
-    
     for p in protocols:
         configs_for_proto = []
         if p == "VLESS": configs_for_proto = [c for c in config_list if c.startswith('vless://') and 'reality' not in c]
@@ -106,54 +125,45 @@ def process_and_save_configs(config_list, output_prefix):
         else: configs_for_proto = [c for c in config_list if c.startswith(p.lower())]
 
         if not configs_for_proto: continue
-        
-        # --- THIS IS THE RESTORED LOGIC ---
-        processed_configs, p_tls, p_nontls, p_tcp, p_ws, p_http, p_grpc = check_modify_config(configs_for_proto, p, check_connection=True)
-        
-        # Write to all categories for the current source
-        write_chunked_subscription_files(f"{output_prefix}/protocols/{p.lower()}", processed_configs)
-        write_chunked_subscription_files(f"{output_prefix}/security/tls", p_tls)
-        write_chunked_subscription_files(f"{output_prefix}/security/non-tls", p_nontls)
-        write_chunked_subscription_files(f"{output_prefix}/networks/tcp", p_tcp)
-        write_chunked_subscription_files(f"{output_prefix}/networks/ws", p_ws)
-        write_chunked_subscription_files(f"{output_prefix}/networks/http", p_http)
-        write_chunked_subscription_files(f"{output_prefix}/networks/grpc", p_grpc)
-        
+        # We pass check_connection=False because the pre-filter already did the check
+        processed_configs, p_tls, p_nontls, p_tcp, p_ws, p_http, p_grpc = check_modify_config(configs_for_proto, p, check_connection=False)
+        write_categorized_files(output_prefix, p, processed_configs, p_tls, p_nontls, p_tcp, p_ws, p_http, p_grpc)
         all_processed_for_source.extend(processed_configs)
-        
     return all_processed_for_source
-
+    
 def write_chunked_subscription_files(base_filepath, configs):
+    # This function is correct
     os.makedirs(os.path.dirname(base_filepath), exist_ok=True)
     if not configs:
         with open(base_filepath, "w") as f: f.write(""); return
-    
+    from title import config_sort
     sorted_configs = config_sort(configs)
     chunks = [sorted_configs[i:i + CONFIG_CHUNK_SIZE] for i in range(0, len(sorted_configs), CONFIG_CHUNK_SIZE)]
-    
     for i, chunk in enumerate(chunks):
         filepath = base_filepath if i == 0 else os.path.join(os.path.dirname(base_filepath), f"{os.path.basename(base_filepath)}{i + 1}")
         content = base64.b64encode("\n".join(chunk).encode("utf-8")).decode("utf-8")
         with open(filepath, "w", encoding="utf-8") as f: f.write(content)
-        # print(f"SUCCESS: Wrote {len(chunk)} configs to {filepath}") # Quieter logging
 
-# This is the main function
+def write_categorized_files(prefix, protocol_name, p_configs, tls, non_tls, tcp, ws, http, grpc):
+    # This function is correct
+    write_chunked_subscription_files(f"{prefix}/protocols/{protocol_name.lower()}", p_configs)
+    if tls: write_chunked_subscription_files(f"{prefix}/security/tls", tls)
+    if non_tls: write_chunked_subscription_files(f"{prefix}/security/non-tls", non_tls)
+    if tcp: write_chunked_subscription_files(f"{prefix}/networks/tcp", tcp)
+    if ws: write_chunked_subscription_files(f"{prefix}/networks/ws", ws)
+    if http: write_chunked_subscription_files(f"{prefix}/networks/http", http)
+    if grpc: write_chunked_subscription_files(f"{prefix}/networks/grpc", grpc)
+
 def main():
-    # ... (The first part of main is correct) ...
-    # Pasting the full, correct main function here.
-    print("--- HYBRID COLLECTOR v26: Full Categorization ---")
+    print("--- HYBRID COLLECTOR v28: Smart Pre-Filtering ---")
     if not all([API_ID, API_HASH, SESSION_STRING]): print("FATAL: Missing Telegram secrets."); exit(1)
-
     setup_directories()
     channels = json_load_safe('telegram channels.json')
     subs_links = json_load_safe('subscription links.json')
     invalid_channels = set(json_load_safe('invalid telegram channels.json'))
     last_update = get_last_update('last update')
     current_update = datetime.now(timezone.utc)
-    
     tg_configs, sub_configs = set(), set()
-    
-    """
     client = None
     try:
         from telethon.sync import TelegramClient
@@ -176,8 +186,6 @@ def main():
     finally:
         if client and client.is_connected():
             client.disconnect(); print("INFO: Telegram client disconnected.")
-"""
-    
     for link in subs_links:
         try:
             content = requests.get(link, timeout=15).text
@@ -187,14 +195,18 @@ def main():
         except: continue
     
     all_raw_configs = list(tg_configs.union(sub_configs))
-    configs_worth_testing = pre_filter_live_hosts(all_raw_configs)
     
-    if not configs_worth_testing:
+    # --- THIS IS THE KEY ---
+    # Run the fast pre-filter on unique IPs first.
+    configs_from_live_hosts = pre_filter_live_hosts(all_raw_configs)
+    
+    if not configs_from_live_hosts:
         print("INFO: No live hosts found after pre-filter. Exiting.");
         with open('last update', 'w') as f: f.write(current_update.isoformat()); return
         
-    processed_tg_configs = process_and_save_configs([c for c in configs_worth_testing if c in tg_configs], "./channels")
-    processed_sub_configs = process_and_save_configs([c for c in configs_worth_testing if c in sub_configs], "./subscribe")
+    # Now, process only the much smaller, higher-quality list.
+    processed_tg_configs = process_and_save_configs([c for c in configs_from_live_hosts if c in tg_configs], "./channels")
+    processed_sub_configs = process_and_save_configs([c for c in configs_from_live_hosts if c in sub_configs], "./subscribe")
     
     all_processed_configs = processed_tg_configs + processed_sub_configs
     print(f"\n--- Creating final combined files from {len(all_processed_configs)} total processed configs ---")
@@ -214,7 +226,6 @@ def main():
     with open('invalid telegram channels.json', 'w') as f: json.dump(sorted(list(invalid_channels)), f, indent=4)
     with open('last update', 'w') as f: f.write(current_update.isoformat())
     print("\n--- SCRIPT FINISHED SUCCESSFULLY ---")
-
 
 if __name__ == "__main__":
     try: main()
