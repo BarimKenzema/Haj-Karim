@@ -1,32 +1,38 @@
-# FINAL HYBRID SCRIPT v13: All Categories Restored
+# FINAL SCRIPT: v18 - Fast Multi-Threaded Testing
 import os, json, re, base64, time, traceback, random
 from datetime import datetime, timezone, timedelta
 import requests
 import jdatetime
+import concurrent.futures
 
 try:
     from title import (
         check_modify_config, config_sort, create_country,
         create_internet_protocol
     )
-    print("INFO: Successfully imported processing functions from title.py")
+    print("INFO: Successfully imported from title.py")
 except ImportError as e:
     print(f"FATAL: 'title.py' is missing. Error: {e}"); exit(1)
 
-# --- CONFIGURATION ---
+# --- Configuration ---
 API_ID = os.environ.get('TELEGRAM_API_ID')
 API_HASH = os.environ.get('TELEGRAM_API_HASH')
 SESSION_STRING = os.environ.get('TELETHON_SESSION')
-CONFIG_CHUNK_SIZE = 444  # Set to your desired chunk size
+CONFIG_CHUNK_SIZE = 444
+# Number of configs to test at the same time. Higher is faster but uses more resources.
+MAX_TEST_WORKERS = 30 
 
-# --- HELPER FUNCTIONS ---
+# --- Helper Functions ---
 def setup_directories():
+    import shutil
     dirs = ['./splitted', './subscribe', './channels', './security', './protocols', './networks', './layers', './countries']
-    for d in dirs: os.makedirs(d, exist_ok=True)
+    for d in dirs:
+        if os.path.exists(d): shutil.rmtree(d)
+        os.makedirs(d)
     for parent in ['subscribe', 'channels']:
         for sub in ['protocols', 'networks', 'security', 'layers']:
             os.makedirs(os.path.join(parent, sub), exist_ok=True)
-    print("INFO: All necessary directories are present.")
+    print("INFO: All necessary directories are clean.")
 
 def json_load_safe(path):
     try:
@@ -43,42 +49,37 @@ def find_configs_raw(text):
     pattern = r'(?:vless|vmess|trojan|ss|hy2|hysteria|tuic|juicity)://[^\s<>"\'`]+'
     return re.findall(pattern, text, re.IGNORECASE)
 
-def process_configs(config_list, source_prefix):
-    """
-    Takes a list of raw configs, processes them, and saves them into all categories.
-    Returns the fully processed and categorized configs.
-    """
-    print(f"\n--- Processing {len(config_list)} configs for source: {source_prefix} ---")
+def process_and_save_configs(config_list, output_prefix):
+    print(f"\n--- Processing {len(config_list)} configs for source: {output_prefix} ---")
     if not config_list: return []
-
-    protocols = ["SHADOWSOCKS", "TROJAN", "VMESS", "VLESS", "REALITY", "TUIC", "HYSTERIA", "JUICITY"]
     
+    protocols = ["SHADOWSOCKS", "TROJAN", "VMESS", "VLESS", "REALITY", "TUIC", "HYSTERIA", "JUICITY"]
     all_processed_for_source = []
     
-    for p in protocols:
-        # Correctly filter configs for each protocol
-        if p == "VLESS": configs_for_proto = [c for c in config_list if c.startswith('vless://') and 'reality' not in c]
-        elif p == "REALITY": configs_for_proto = [c for c in config_list if c.startswith('vless://') and 'security=reality' in c]
-        elif p == "HYSTERIA": configs_for_proto = [c for c in config_list if c.startswith('hy')]
-        else: configs_for_proto = [c for c in config_list if c.startswith(p.lower())]
+    # --- Multi-threaded testing for speed ---
+    with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_TEST_WORKERS) as executor:
+        future_to_proto = {}
+        for p in protocols:
+            configs_for_proto = []
+            if p == "VLESS": configs_for_proto = [c for c in config_list if c.startswith('vless://') and 'reality' not in c]
+            elif p == "REALITY": configs_for_proto = [c for c in config_list if c.startswith('vless://') and 'security=reality' in c]
+            elif p == "HYSTERIA": configs_for_proto = [c for c in config_list if c.startswith('hy')]
+            else: configs_for_proto = [c for c in config_list if c.startswith(p.lower())]
 
-        if not configs_for_proto: continue
+            if configs_for_proto:
+                # Submit the entire batch for a protocol to be processed
+                future = executor.submit(check_modify_config, configs_for_proto, p, check_connection=True)
+                future_to_proto[future] = p
 
-        processed_configs, tls, non_tls, tcp, ws, http, grpc = check_modify_config(configs_for_proto, p, check_connection=False)
-        
-        # --- THIS IS THE RESTORED LOGIC ---
-        # Write to all categories for the current source
-        write_chunked_subscription_files(f"{source_prefix}/protocols/{p.lower()}", processed_configs)
-        write_chunked_subscription_files(f"{source_prefix}/security/tls", tls)
-        write_chunked_subscription_files(f"{source_prefix}/security/non-tls", non_tls)
-        write_chunked_subscription_files(f"{source_prefix}/networks/tcp", tcp)
-        write_chunked_subscription_files(f"{source_prefix}/networks/ws", ws)
-        write_chunked_subscription_files(f"{source_prefix}/networks/http", http)
-        write_chunked_subscription_files(f"{source_prefix}/networks/grpc", grpc)
-        
-        all_processed_for_source.extend(processed_configs)
-        
-    print(f"--- Finished processing for source: {source_prefix} ---")
+        for future in concurrent.futures.as_completed(future_to_proto):
+            protocol_name = future_to_proto[future]
+            try:
+                processed_configs, p_tls, p_nontls, p_tcp, p_ws, p_http, p_grpc = future.result()
+                write_categorized_files(output_prefix, protocol_name, processed_configs, p_tls, p_nontls, p_tcp, p_ws, p_http, p_grpc)
+                all_processed_for_source.extend(processed_configs)
+            except Exception as exc:
+                print(f'Error processing protocol {protocol_name}: {exc}')
+                
     return all_processed_for_source
 
 def write_chunked_subscription_files(base_filepath, configs):
@@ -95,10 +96,18 @@ def write_chunked_subscription_files(base_filepath, configs):
         with open(filepath, "w", encoding="utf-8") as f: f.write(content)
         print(f"SUCCESS: Wrote {len(chunk)} configs to {filepath}")
 
+def write_categorized_files(prefix, protocol_name, p_configs, tls, non_tls, tcp, ws, http, grpc):
+    write_chunked_subscription_files(f"{prefix}/protocols/{protocol_name.lower()}", p_configs)
+    if tls: write_chunked_subscription_files(f"{prefix}/security/tls", tls)
+    if non_tls: write_chunked_subscription_files(f"{prefix}/security/non-tls", non_tls)
+    if tcp: write_chunked_subscription_files(f"{prefix}/networks/tcp", tcp)
+    if ws: write_chunked_subscription_files(f"{prefix}/networks/ws", ws)
+    if http: write_chunked_subscription_files(f"{prefix}/networks/http", http)
+    if grpc: write_chunked_subscription_files(f"{prefix}/networks/grpc", grpc)
+
 def main():
-    print("--- HYBRID COLLECTOR v14: Final Telethon Fix ---")
-    if not all([API_ID, API_HASH, SESSION_STRING]):
-        print("FATAL: Missing Telegram secrets."); exit(1)
+    print("--- HYBRID COLLECTOR v18: Fast Multi-Threaded Testing ---")
+    if not all([API_ID, API_HASH, SESSION_STRING]): print("FATAL: Missing Telegram secrets."); exit(1)
 
     setup_directories()
     channels = json_load_safe('telegram channels.json')
@@ -107,61 +116,49 @@ def main():
     last_update = get_last_update('last update')
     current_update = datetime.now(timezone.utc)
     
-    tg_configs = set()
-    sub_configs = set()
-
-    # --- Part 1: DATA COLLECTION (with corrected Telethon logic) ---
-    print(f"\n--- Scanning {len(channels)} Telegram channels... ---")
+    tg_configs, sub_configs = set(), set()
     
-    # We will manually start and stop the client for more control
     client = None
     try:
         from telethon.sync import TelegramClient
         from telethon.sessions import StringSession
-        
-        # Initialize the client
         client = TelegramClient(StringSession(SESSION_STRING), int(API_ID), API_HASH)
-        client.connect() # Explicitly connect
-        
+        client.connect()
         if not client.is_user_authorized():
-            print("WARNING: Telegram client is not authorized. Session might be invalid.")
-        else:
-            print("INFO: Telegram client login successful. Starting channel scan.")
-            channels_to_scan = set(channels) - invalid_channels
-            for i, channel in enumerate(channels_to_scan):
-                try:
-                    print(f"Scanning @{channel} ({i+1}/{len(channels_to_scan)})...")
-                    for message in client.iter_messages(channel, limit=200):
-                        if message.date < last_update: break
-                        tg_configs.update(find_configs_raw(message.text))
-                    time.sleep(random.uniform(2.0, 4.0)) # Patient delay
-                except Exception as e:
-                    print(f"--> ERROR scanning @{channel}: {e}"); invalid_channels.add(channel)
+            raise Exception("Telegram client authorization failed.")
+        
+        print(f"INFO: Telegram login successful. Scanning {len(channels)} channels...")
+        channels_to_scan = set(channels) - invalid_channels
+        for i, channel in enumerate(channels_to_scan):
+            try:
+                print(f"Scanning @{channel} ({i+1}/{len(channels_to_scan)})...")
+                for message in client.iter_messages(channel, limit=200):
+                    if message.date < last_update: break
+                    tg_configs.update(find_configs_raw(message.text))
+                time.sleep(random.uniform(2.0, 4.0))
+            except Exception as e:
+                print(f"--> ERROR scanning @{channel}: {e}"); invalid_channels.add(channel)
     except Exception as e:
-        print(f"WARNING: The entire Telegram block failed. Reason: {e}")
+        print(f"WARNING: Telegram collection block failed. Reason: {e}")
     finally:
-        # IMPORTANT: Always disconnect the client, even if errors occurred
         if client and client.is_connected():
-            client.disconnect()
-            print("INFO: Telegram client disconnected.")
+            client.disconnect(); print("INFO: Telegram client disconnected.")
 
-    print(f"\n--- Fetching {len(subs_links)} subscription links... ---")
     for link in subs_links:
         try:
             content = requests.get(link, timeout=15).text
             try: content = base64.b64decode(content).decode('utf-8')
             except: pass
             sub_configs.update(find_configs_raw(content))
-        except Exception as e: print(f"--> ERROR fetching sub link {link}: {e}")
+        except: continue
     
-    # The rest of the script is IDENTICAL to the last version and is correct.
-    processed_tg_configs = process_configs(list(tg_configs), "./channels")
-    processed_sub_configs = process_configs(list(sub_configs), "./subscribe")
+    processed_tg_configs = process_and_save_configs(list(tg_configs), "./channels")
+    processed_sub_configs = process_and_save_configs(list(sub_configs), "./subscribe")
     
     all_processed_configs = processed_tg_configs + processed_sub_configs
     print(f"\n--- Creating final combined files from {len(all_processed_configs)} total processed configs ---")
-
-    process_configs(all_processed_configs, ".")
+    
+    process_and_save_configs(all_processed_configs, ".")
     
     country_dict = create_country(all_processed_configs)
     for country_code, configs in country_dict.items():
@@ -175,15 +172,8 @@ def main():
     
     with open('invalid telegram channels.json', 'w') as f: json.dump(sorted(list(invalid_channels)), f, indent=4)
     with open('last update', 'w') as f: f.write(current_update.isoformat())
-    
     print("\n--- SCRIPT FINISHED SUCCESSFULLY ---")
 
-
-# The part below this line is also unchanged and correct
 if __name__ == "__main__":
-    try:
-        main()
-    except Exception as e:
-        print(f"\n--- FATAL UNHANDLED ERROR IN MAIN ---")
-        traceback.print_exc()
-        exit(1)
+    try: main()
+    except Exception: print(f"\n--- FATAL UNHANDLED ERROR IN MAIN ---"); traceback.print_exc(); exit(1)
