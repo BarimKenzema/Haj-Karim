@@ -19,13 +19,21 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Install System Dependencies (tcping)
+      - name: Install System Dependencies and tcping
         run: |
-          # The standard repositories don't have tcping, so we download and install it manually
+          # Install basic build tools
           sudo apt-get update
-          sudo apt-get install -y wget
-          wget http://www.linux-projects.org/listing/debs/tcping_1.3.5-1_amd64.deb
-          sudo dpkg -i tcping_1.3.5-1_amd64.deb
+          sudo apt-get install -y build-essential
+
+          # Download the source code for a reliable tcping implementation
+          git clone https://github.com/flygoast/tcping.git
+          
+          # Go into the directory and build it
+          cd tcping
+          make
+          
+          # Move the compiled program to a location where the system can find it
+          sudo mv tcping /usr/local/bin/
 
       - name: Install Python Dependencies
         run: |
