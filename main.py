@@ -1,5 +1,5 @@
-# FINAL SCRIPT v23: Python-based Pre-Filtering
-import os, json, re, base64, time, traceback, random
+# FINAL SCRIPT v24: Correct Pre-Filtering with Standard Libraries
+import os, json, re, base64, time, traceback, random, socket
 from datetime import datetime, timezone, timedelta
 import requests
 import jdatetime
@@ -12,17 +12,11 @@ try:
 except ImportError as e:
     print(f"FATAL: 'title.py' is missing. Error: {e}"); exit(1)
 
-# NEW: Import the Python-based ping library
-try:
-    from tcp_latency import measure_latency
-except ImportError:
-    print("FATAL: 'python-tcp-ping' not installed. Please add it to requirements.txt"); exit(1)
-
 API_ID = os.environ.get('TELEGRAM_API_ID')
 API_HASH = os.environ.get('TELEGRAM_API_HASH')
 SESSION_STRING = os.environ.get('TELETHON_SESSION')
 CONFIG_CHUNK_SIZE = 444
-MAX_PREFILTER_WORKERS = 100 # We can use more workers with this library
+MAX_PREFILTER_WORKERS = 100
 
 def setup_directories():
     import shutil
@@ -50,30 +44,22 @@ def find_configs_raw(text):
     pattern = r'(?:vless|vmess|trojan|ss|hy2|hysteria|tuic|juicity)://[^\s<>"\'`]+'
     return re.findall(pattern, text, re.IGNORECASE)
 
-def check_host_with_py_ping(host_port):
-    """
-    Checks a single host:port using the python-tcp-ping library.
-    Returns the host_port if live, otherwise None.
-    """
+def check_host_port_with_socket(host_port):
+    """Checks a single host:port using Python's built-in socket library."""
     try:
-        host, port = host_port.rsplit(':', 1)
-        port = int(port)
-        # Runs 1 test, with a 1-second timeout.
-        latency = measure_latency(host=host, port=port, runs=1, timeout=1.0)
-        if latency:
-            # The library returns a list, we take the first result
-            print(f"LIVE: {host_port} | Latency: {latency[0]:.2f}ms")
+        host, port_str = host_port.rsplit(':', 1)
+        port = int(port_str)
+        # We use create_connection which handles both IPv4 and IPv6
+        with socket.create_connection((host, port), timeout=1.5):
+            print(f"LIVE: {host_port}")
             return host_port
-    except (ValueError, IndexError): # Handles bad ports or results
-        pass
-    except Exception: # Catch all other errors
+    except (ValueError, socket.timeout, ConnectionRefusedError, OSError):
+        pass # Silently fail for dead hosts
+    except Exception:
         pass
     return None
 
 def pre_filter_live_hosts(all_configs):
-    """
-    Uses the reliable python-tcp-ping library to find live hosts in parallel.
-    """
     print(f"\n--- Pre-filtering {len(all_configs)} configs for live ports... ---")
     host_port_to_configs = {}
     for config in all_configs:
@@ -99,7 +85,7 @@ def pre_filter_live_hosts(all_configs):
     
     live_host_ports = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_PREFILTER_WORKERS) as executor:
-        future_to_host = {executor.submit(check_host_with_py_ping, host_port): host_port for host_port in hosts_to_check}
+        future_to_host = {executor.submit(check_host_port_with_socket, host_port): host_port for host_port in hosts_to_check}
         for future in concurrent.futures.as_completed(future_to_host):
             result = future.result()
             if result:
@@ -113,10 +99,11 @@ def pre_filter_live_hosts(all_configs):
     return configs_from_live_hosts
 
 def main():
-    print("--- HYBRID COLLECTOR v23: Python Ping Pre-Filter ---")
-    # ... (The rest of the main function is correct and does not need to be changed) ...
+    print("--- HYBRID COLLECTOR v24: Standard Library Pre-Filter ---")
     if not all([API_ID, API_HASH, SESSION_STRING]): print("FATAL: Missing Telegram secrets."); exit(1)
+
     setup_directories()
+    # ... (rest of main function is correct) ...
     channels = json_load_safe('telegram channels.json')
     subs_links = json_load_safe('subscription links.json')
     invalid_channels = set(json_load_safe('invalid telegram channels.json'))
@@ -169,6 +156,20 @@ def main():
     with open('invalid telegram channels.json', 'w') as f: json.dump(sorted(list(invalid_channels)), f, indent=4)
     with open('last update', 'w') as f: f.write(current_update.isoformat())
     print("\n--- SCRIPT FINISHED SUCCESSFULLY ---")
+
+def write_chunked_subscription_files(base_filepath, configs):
+    # This function is also correct from previous versions.
+    os.makedirs(os.path.dirname(base_filepath), exist_ok=True)
+    if not configs:
+        with open(base_filepath, "w") as f: f.write(""); return
+    from title import config_sort # Import locally
+    sorted_configs = config_sort(configs)
+    chunks = [sorted_configs[i:i + CONFIG_CHUNK_SIZE] for i in range(0, len(sorted_configs), CONFIG_CHUNK_SIZE)]
+    for i, chunk in enumerate(chunks):
+        filepath = base_filepath if i == 0 else os.path.join(os.path.dirname(base_filepath), f"{os.path.basename(base_filepath)}{i + 1}")
+        content = base64.b64encode("\n".join(chunk).encode("utf-8")).decode("utf-8")
+        with open(filepath, "w", encoding="utf-8") as f: f.write(content)
+        print(f"SUCCESS: Wrote {len(chunk)} configs to {filepath}")
 
 if __name__ == "__main__":
     try: main()
