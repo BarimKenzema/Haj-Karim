@@ -117,7 +117,7 @@ def process_and_save_configs(config_list, output_prefix):
         write_chunked_subscription_files(f"{output_prefix}/networks/tcp", p_tcp)
         write_chunked_subscription_files(f"{output_prefix}/networks/ws", p_ws)
         write_chunked_subscription_files(f"{output_prefix}/networks/http", p_http)
-        write_chunked_subscription_files(f"{output_prefi_x}/networks/grpc", p_grpc)
+        write_chunked_subscription_files(f"{output_prefix}/networks/grpc", p_grpc)
         
         all_processed_for_source.extend(processed_configs)
         
