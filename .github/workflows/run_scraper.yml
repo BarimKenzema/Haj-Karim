@@ -19,10 +19,11 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Install System Dependencies (tcping)
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y tcping
+  - name: Install System Dependencies (fping)
+    run: |
+      sudo apt-get update
+      # fping is a standard, available package that does a similar job
+      sudo apt-get install -y fping
 
       - name: Install Python Dependencies
         run: |
