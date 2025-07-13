@@ -1,4 +1,4 @@
-# FINAL SCRIPT v25: Correct Scope and Imports
+# FINAL SCRIPT v26: Full Categorization Restored
 import os, json, re, base64, time, traceback, random, socket
 from datetime import datetime, timezone, timedelta
 import requests
@@ -6,7 +6,6 @@ import jdatetime
 from urllib.parse import urlparse
 import concurrent.futures
 
-# --- ALL IMPORTS ARE NOW AT THE TOP ---
 try:
     from title import (
         check_modify_config, config_sort, create_country,
@@ -23,7 +22,7 @@ SESSION_STRING = os.environ.get('TELETHON_SESSION')
 CONFIG_CHUNK_SIZE = 444
 MAX_PREFILTER_WORKERS = 100
 
-# --- Helper Functions (Unchanged and Correct) ---
+# --- Helper Functions (Unchanged) ---
 def setup_directories():
     import shutil
     dirs = ['./splitted', './subscribe', './channels', './security', './protocols', './networks', './layers', './countries']
@@ -33,7 +32,7 @@ def setup_directories():
     for parent in ['subscribe', 'channels']:
         for sub in ['protocols', 'networks', 'security', 'layers']:
             os.makedirs(os.path.join(parent, sub), exist_ok=True)
-    print("INFO: All necessary directories are clean.")
+    print("INFO: All necessary directories are present.")
 
 def json_load_safe(path):
     try:
@@ -83,7 +82,7 @@ def pre_filter_live_hosts(all_configs):
     with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_PREFILTER_WORKERS) as executor:
         future_to_host = {executor.submit(check_host_port_with_socket, host_port): host_port for host_port in hosts_to_check}
         for i, future in enumerate(concurrent.futures.as_completed(future_to_host)):
-            if (i + 1) % 500 == 0: print(f"Tested {i+1}/{len(hosts_to_check)} hosts...")
+            if (i + 1) % 1000 == 0: print(f"Tested {i+1}/{len(hosts_to_check)} hosts...")
             result = future.result()
             if result: live_host_ports.append(result)
     configs_from_live_hosts = []
@@ -95,50 +94,63 @@ def pre_filter_live_hosts(all_configs):
 def process_and_save_configs(config_list, output_prefix):
     print(f"\n--- Processing {len(config_list)} configs for source: {output_prefix} ---")
     if not config_list: return []
+    
     protocols = ["SHADOWSOCKS", "TROJAN", "VMESS", "VLESS", "REALITY", "TUIC", "HYSTERIA", "JUICITY"]
     all_processed_for_source = []
+    
     for p in protocols:
         configs_for_proto = []
         if p == "VLESS": configs_for_proto = [c for c in config_list if c.startswith('vless://') and 'reality' not in c]
         elif p == "REALITY": configs_for_proto = [c for c in config_list if c.startswith('vless://') and 'security=reality' in c]
         elif p == "HYSTERIA": configs_for_proto = [c for c in config_list if c.startswith('hy')]
         else: configs_for_proto = [c for c in config_list if c.startswith(p.lower())]
+
         if not configs_for_proto: continue
+        
+        # --- THIS IS THE RESTORED LOGIC ---
         processed_configs, p_tls, p_nontls, p_tcp, p_ws, p_http, p_grpc = check_modify_config(configs_for_proto, p, check_connection=True)
-        write_categorized_files(output_prefix, p, processed_configs, p_tls, p_nontls, p_tcp, p_ws, p_http, p_grpc)
+        
+        # Write to all categories for the current source
+        write_chunked_subscription_files(f"{output_prefix}/protocols/{p.lower()}", processed_configs)
+        write_chunked_subscription_files(f"{output_prefix}/security/tls", p_tls)
+        write_chunked_subscription_files(f"{output_prefix}/security/non-tls", p_nontls)
+        write_chunked_subscription_files(f"{output_prefix}/networks/tcp", p_tcp)
+        write_chunked_subscription_files(f"{output_prefix}/networks/ws", p_ws)
+        write_chunked_subscription_files(f"{output_prefix}/networks/http", p_http)
+        write_chunked_subscription_files(f"{output_prefi_x}/networks/grpc", p_grpc)
+        
         all_processed_for_source.extend(processed_configs)
+        
     return all_processed_for_source
 
 def write_chunked_subscription_files(base_filepath, configs):
     os.makedirs(os.path.dirname(base_filepath), exist_ok=True)
     if not configs:
         with open(base_filepath, "w") as f: f.write(""); return
+    
     sorted_configs = config_sort(configs)
     chunks = [sorted_configs[i:i + CONFIG_CHUNK_SIZE] for i in range(0, len(sorted_configs), CONFIG_CHUNK_SIZE)]
+    
     for i, chunk in enumerate(chunks):
         filepath = base_filepath if i == 0 else os.path.join(os.path.dirname(base_filepath), f"{os.path.basename(base_filepath)}{i + 1}")
         content = base64.b64encode("\n".join(chunk).encode("utf-8")).decode("utf-8")
         with open(filepath, "w", encoding="utf-8") as f: f.write(content)
-        # print(f"SUCCESS: Wrote {len(chunk)} configs to {filepath}")
+        # print(f"SUCCESS: Wrote {len(chunk)} configs to {filepath}") # Quieter logging
 
-def write_categorized_files(prefix, protocol_name, p_configs, tls, non_tls, tcp, ws, http, grpc):
-    write_chunked_subscription_files(f"{prefix}/protocols/{protocol_name.lower()}", p_configs)
-    if tls: write_chunked_subscription_files(f"{prefix}/security/tls", tls)
-    if non_tls: write_chunked_subscription_files(f"{prefix}/security/non-tls", non_tls)
-    if tcp: write_chunked_subscription_files(f"{prefix}/networks/tcp", tcp)
-    if ws: write_chunked_subscription_files(f"{prefix}/networks/ws", ws)
-    if http: write_chunked_subscription_files(f"{prefix}/networks/http", http)
-    if grpc: write_chunked_subscription_files(f"{prefix}/networks/grpc", grpc)
-
+# This is the main function
 def main():
-    print("--- HYBRID COLLECTOR v25: Final ---")
+    # ... (The first part of main is correct) ...
+    # Pasting the full, correct main function here.
+    print("--- HYBRID COLLECTOR v26: Full Categorization ---")
     if not all([API_ID, API_HASH, SESSION_STRING]): print("FATAL: Missing Telegram secrets."); exit(1)
+
     setup_directories()
     channels = json_load_safe('telegram channels.json')
     subs_links = json_load_safe('subscription links.json')
     invalid_channels = set(json_load_safe('invalid telegram channels.json'))
     last_update = get_last_update('last update')
     current_update = datetime.now(timezone.utc)
+    
     tg_configs, sub_configs = set(), set()
     client = None
     try:
@@ -162,6 +174,7 @@ def main():
     finally:
         if client and client.is_connected():
             client.disconnect(); print("INFO: Telegram client disconnected.")
+
     for link in subs_links:
         try:
             content = requests.get(link, timeout=15).text
@@ -177,7 +190,13 @@ def main():
         print("INFO: No live hosts found after pre-filter. Exiting.");
         with open('last update', 'w') as f: f.write(current_update.isoformat()); return
         
-    all_processed_configs = process_and_save_configs(configs_worth_testing, ".")
+    processed_tg_configs = process_and_save_configs([c for c in configs_worth_testing if c in tg_configs], "./channels")
+    processed_sub_configs = process_and_save_configs([c for c in configs_worth_testing if c in sub_configs], "./subscribe")
+    
+    all_processed_configs = processed_tg_configs + processed_sub_configs
+    print(f"\n--- Creating final combined files from {len(all_processed_configs)} total processed configs ---")
+    
+    process_and_save_configs(all_processed_configs, ".")
     
     country_dict = create_country(all_processed_configs)
     for country_code, configs in country_dict.items():
@@ -192,6 +211,7 @@ def main():
     with open('invalid telegram channels.json', 'w') as f: json.dump(sorted(list(invalid_channels)), f, indent=4)
     with open('last update', 'w') as f: f.write(current_update.isoformat())
     print("\n--- SCRIPT FINISHED SUCCESSFULLY ---")
+
 
 if __name__ == "__main__":
     try: main()
