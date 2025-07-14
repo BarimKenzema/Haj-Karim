@@ -2,7 +2,7 @@ name: Run V2Ray Collector
 
 on:
   schedule:
-    - cron: '0 */4 * * *'
+    - cron: '*/44 * * * *' # Every 44 minutes
   workflow_dispatch:
 
 jobs:
