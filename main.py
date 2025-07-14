@@ -1,4 +1,4 @@
-# FINAL SCRIPT v31: All Categories & Protocols Fixed
+# FINAL SCRIPT v32: All Categories Restored & Corrected
 import os, json, re, base64, time, traceback, random, socket
 from datetime import datetime, timezone, timedelta
 import requests
@@ -15,12 +15,14 @@ try:
 except ImportError as e:
     print(f"FATAL: 'title.py' is missing. Error: {e}"); exit(1)
 
+# --- Configuration ---
 API_ID = os.environ.get('TELEGRAM_API_ID')
 API_HASH = os.environ.get('TELEGRAM_API_HASH')
 SESSION_STRING = os.environ.get('TELETHON_SESSION')
 CONFIG_CHUNK_SIZE = 444
 MAX_PREFILTER_WORKERS = 100
 
+# --- Helper Functions (Unchanged and Correct) ---
 def setup_directories():
     import shutil
     dirs = ['./splitted', './subscribe', './channels', './security', './protocols', './networks', './layers', './countries']
@@ -45,34 +47,23 @@ def find_configs_raw(text):
     return re.findall(pattern, text, re.IGNORECASE)
 
 def get_host_port_from_config(config):
-    """
-    A robust function to extract host and port from any config type.
-    """
     try:
         if config.startswith("vmess://"):
             json_str = config.replace("vmess://", "").strip()
             if len(json_str) % 4 != 0: json_str += '=' * (4 - len(json_str) % 4)
             decoded = json.loads(base64.b64decode(json_str).decode('utf-8', 'ignore'))
             return decoded.get('add'), decoded.get('port')
-        
         elif config.startswith("ss://"):
-            # SS links can have user:pass@host:port or just base64 data
             main_part = config.split("://")[1]
             if '@' in main_part:
-                # Format is user:pass@host:port#remark
                 return main_part.split('@')[1].split('#')[0].rsplit(':', 1)
             else:
-                # It's all base64 encoded
                 decoded_part = base64.b64decode(main_part.split('#')[0]).decode('utf-8', 'ignore')
-                # Format is method:pass@host:port
                 return decoded_part.split('@')[1].rsplit(':', 1)
         else:
-            # For vless, trojan, etc.
             parsed = urlparse(config)
             return parsed.hostname, parsed.port
-    except:
-        return None, None
-
+    except: return None, None
 
 def check_host_port_with_socket(host_port):
     try:
@@ -88,7 +79,7 @@ def pre_filter_live_hosts(all_configs):
     for config in all_configs:
         host, port = get_host_port_from_config(config)
         if host and port:
-            from title import get_ips # Import here to avoid circular dependency issues
+            from title import get_ips
             ips = get_ips(host)
             if not ips: continue
             ip_address = ips[0]
@@ -123,11 +114,11 @@ def write_chunked_subscription_files(base_filepath, configs):
         with open(filepath, "w", encoding="utf-8") as f: f.write(content)
         print(f"SUCCESS: Wrote {len(chunk)} configs to {filepath}")
 
+# Main execution logic
 def main():
-    print("--- HYBRID COLLECTOR v31: All Fixes ---")
+    print("--- HYBRID COLLECTOR v32: All Categories Fixed ---")
     setup_directories()
-    # Temporarily disable Telegram part to focus on processing
-    # You can re-enable this try/except block later
+    # Temporarily disable Telegram for speed, you can re-enable later
     tg_configs = set()
     
     subs_links = json_load_safe('subscription links.json')
@@ -144,17 +135,16 @@ def main():
     live_unique_configs = pre_filter_live_hosts(all_raw_configs)
     
     if not live_unique_configs:
-        print("INFO: No live configs found after filtering. Exiting."); return
+        print("INFO: No live configs found. Exiting."); return
         
     print("\n--- Starting Final Categorization and Processing ---")
-    protocols = ["SHADOWSOCKS", "TROJAN", "VMESS", "VLESS", "REALITY", "TUIC", "HYSTERIA", "JUICITY"]
     
     # These dictionaries will hold the final, fully processed configs for each category
-    final_protocol_configs = {p: [] for p in protocols}
+    final_protocol_configs = {p: [] for p in ["SHADOWSOCKS", "TROJAN", "VMESS", "VLESS", "REALITY", "TUIC", "HYSTERIA", "JUICITY"]}
     final_security_configs = {'tls': [], 'non_tls': []}
     final_network_configs = {'tcp': [], 'ws': [], 'grpc': [], 'http': []}
 
-    for p in protocols:
+    for p in final_protocol_configs.keys():
         configs_for_proto = []
         if p == "VLESS": configs_for_proto = [c for c in live_unique_configs if c.startswith('vless://') and 'reality' not in c]
         elif p == "REALITY": configs_for_proto = [c for c in live_unique_configs if c.startswith('vless://') and 'security=reality' in c]
@@ -163,12 +153,10 @@ def main():
 
         if not configs_for_proto: continue
         
-        # Process this batch to get final names and sub-categories
-        p_mod, p_tls, p_nontls, p_tcp, p_ws, p_http, p_grpc = check_modify_config(configs_for_proto, p, check_connection=False) # No need to check connection again
+        p_mod, p_tls, p_nontls, p_tcp, p_ws, p_http, p_grpc = check_modify_config(configs_for_proto, p, check_connection=True)
         
-        # Add the processed configs to our final dictionaries
         final_protocol_configs[p].extend(p_mod)
-        final_security_cfigsnogs['tls'].extend(p_tls)
+        final_security_configs['tls'].extend(p_tls)
         final_security_configs['non_tls'].extend(p_nontls)
         final_network_configs['tcp'].extend(p_tcp)
         final_network_configs['ws'].extend(p_ws)
@@ -199,6 +187,7 @@ def main():
     
     write_chunked_subscription_files('./splitted/mixed', all_processed_configs)
     
+    with open('last update', 'w') as f: f.write(datetime.now(timezone.utc).isoformat())
     print("\n--- SCRIPT FINISHED SUCCESSFULLY ---")
 
 if __name__ == "__main__":
