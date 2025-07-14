@@ -158,45 +158,53 @@ def main():
         print("INFO: No live configs found after filtering. Exiting."); return
         
     print("\n--- Starting Final Categorization and Processing ---")
-    protocols = ["SHADOWSOCKS", "TROJAN", "VMESS", "VLESS", "REALITY", "TUIC", "HYSTERIA", "JUICITY"]
+
+protocols = ["SHADOWSOCKS", "TROJAN", "VMESS", "VLESS", "REALITY", "TUIC", "HYSTERIA", "JUICITY"]
+
+# These dictionaries will hold the final, fully processed configs for each category
+final_protocol_configs = {p: [] for p in protocols}
+final_security_configs = {'tls': [], 'non_tls': []}
+final_network_configs = {'tcp': [], 'ws': [], 'grpc': [], 'http': []}
+
+for p in final_protocol_configs.keys():
+    configs_for_proto = []
+    # This logic correctly separates all protocols
+    if p == "VLESS": configs_for_proto = [c for c in live_unique_configs if c.startswith('vless://') and 'reality' not in c]
+    elif p == "REALITY": configs_for_proto = [c for c in live_unique_configs if c.startswith('vless://') and 'security=reality' in c]
+    elif p == "HYSTERIA": configs_for_proto = [c for c in live_unique_configs if c.startswith('hy')]
+    else: configs_for_proto = [c for c in live_unique_configs if c.startswith(p.lower())]
+
+    if not configs_for_proto:
+        continue
     
-    final_protocol_configs = {p: [] for p in protocols}
-    final_security_configs = {'tls': [], 'non_tls': []}
-    final_network_configs = {'tcp': [], 'ws': [], 'grpc': [], 'http': []}
-
-    for p in final_protocol_configs.keys():
-        configs_for_proto = []
-        if p == "VLESS": configs_for_proto = [c for c in live_unique_configs if c.startswith('vless://') and 'reality' not in c]
-        elif p == "REALITY": configs_for_proto = [c for c in live_unique_configs if c.startswith('vless://') and 'security=reality' in c]
-        elif p == "HYSTERIA": configs_for_proto = [c for c in live_unique_configs if c.startswith('hy')]
-        else: configs_for_proto = [c for c in live_unique_configs if c.startswith(p.lower())]
-
-        if not configs_for_proto: continue
-        
-        p_mod, p_tls, p_nontls, p_tcp, p_ws, p_http, p_grpc = check_modify_config(configs_for_proto, p, check_connection=True)
-        
-        final_protocol_configs[p].extend(p_mod)
-        final_security_configs['tls'].extend(p_tls)
-        final_security_configs['non_tls'].extend(p_nontls)
-        final_network_configs['tcp'].extend(p_tcp)
-        final_network_configs['ws'].extend(p_ws)
-        final_network_configs['http'].extend(p_http)
-        final_network_configs['grpc'].extend(p_grpc)
-
-    print("\n--- Writing All Categorized Subscription Files ---")
-
-    for p_name, p_configs in final_protocol_configs.items():
-        write_chunked_subscription_files(f"./protocols/{p_name.lower()}", p_configs)
-        
-    for sec_type, configs in final_security_configs.items():
-        write_chunked_subscription_files(f"./security/{sec_type.replace('_','-')}", configs)
-        
-    for net_type, configs in final_network_configs.items():
-        write_chunked_subscription_files(f"./networks/{net_type}", configs)
-
-    all_processed_configs = [item for sublist in final_protocol_configs.values() for item in sublist]
+    # Process this batch to get final names and sub-categories
+    # The check_connection=True here is what filters for live servers
+    p_mod, p_tls, p_nontls, p_tcp, p_ws, p_http, p_grpc = check_modify_config(configs_for_proto, p, check_connection=True)
     
-    from title import create_country, create_internet_protocol
+    # --- THIS IS THE CORRECTED LOGIC ---
+    # Add the processed configs to our final dictionaries
+    final_protocol_configs[p].extend(p_mod)
+    final_security_configs['tls'].extend(p_tls)
+    final_security_configs['non_tls'].extend(p_nontls)
+    final_network_configs['tcp'].extend(p_tcp)
+    final_network_configs['ws'].extend(p_ws)
+    final_network_configs['http'].extend(p_http)
+    final_network_configs['grpc'].extend(p_grpc)
+
+# --- Now we write everything from our final dictionaries ---
+print("\n--- Writing All Categorized Subscription Files ---")
+
+for p_name, p_configs in final_protocol_configs.items():
+    write_chunked_subscription_files(f"./protocols/{p_name.lower()}", p_configs)
+    
+for sec_type, configs in final_security_configs.items():
+    write_chunked_subscription_files(f"./security/{sec_type.replace('_','-')}", configs)
+    
+for net_type, configs in final_network_configs.items():
+    write_chunked_subscription_files(f"./networks/{net_type}", configs)
+
+# Combine all processed configs for the remaining categories
+all_processed_configs = [item for sublist in final_protocol_configs.values() for item in sublist]
     country_dict = create_country(all_processed_configs)
     for country_code, configs in country_dict.items():
         write_chunked_subscription_files(f'./countries/{country_code}/mixed', configs)
