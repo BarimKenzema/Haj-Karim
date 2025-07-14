@@ -206,6 +206,7 @@ for net_type, configs in final_network_configs.items():
 # Combine all processed configs for the remaining categories
 all_processed_configs = [item for sublist in final_protocol_configs.values() for item in sublist]
     country_dict = create_country(all_processed_configs)
+print(f"--- Writing {len(country_dict)} country-specific files... ---")
     for country_code, configs in country_dict.items():
         write_chunked_subscription_files(f'./countries/{country_code}/mixed', configs)
         
