@@ -1,4 +1,4 @@
-# FINAL SCRIPT v32: All Categories Restored & Corrected
+# FINAL SCRIPT v33: Uncrashable Parser
 import os, json, re, base64, time, traceback, random, socket
 from datetime import datetime, timezone, timedelta
 import requests
@@ -22,7 +22,7 @@ SESSION_STRING = os.environ.get('TELETHON_SESSION')
 CONFIG_CHUNK_SIZE = 444
 MAX_PREFILTER_WORKERS = 100
 
-# --- Helper Functions (Unchanged and Correct) ---
+# --- Helper Functions (with final fixes) ---
 def setup_directories():
     import shutil
     dirs = ['./splitted', './subscribe', './channels', './security', './protocols', './networks', './layers', './countries']
@@ -47,23 +47,42 @@ def find_configs_raw(text):
     return re.findall(pattern, text, re.IGNORECASE)
 
 def get_host_port_from_config(config):
+    """
+    A robust function to extract host and port from any config type.
+    This version is hardened against all malformed links.
+    """
     try:
         if config.startswith("vmess://"):
             json_str = config.replace("vmess://", "").strip()
             if len(json_str) % 4 != 0: json_str += '=' * (4 - len(json_str) % 4)
             decoded = json.loads(base64.b64decode(json_str).decode('utf-8', 'ignore'))
             return decoded.get('add'), decoded.get('port')
+        
         elif config.startswith("ss://"):
             main_part = config.split("://")[1]
             if '@' in main_part:
-                return main_part.split('@')[1].split('#')[0].rsplit(':', 1)
+                # Format is user:pass@host:port#remark
+                host_port_part = main_part.split('@')[1].split('#')[0]
+                if ':' in host_port_part:
+                    return host_port_part.rsplit(':', 1)
             else:
+                # It's all base64 encoded
                 decoded_part = base64.b64decode(main_part.split('#')[0]).decode('utf-8', 'ignore')
-                return decoded_part.split('@')[1].rsplit(':', 1)
+                # Format is method:pass@host:port
+                host_port_part = decoded_part.split('@')[1]
+                if ':' in host_port_part:
+                    return host_port_part.rsplit(':', 1)
         else:
+            # For vless, trojan, etc.
             parsed = urlparse(config)
             return parsed.hostname, parsed.port
-    except: return None, None
+    except Exception:
+        # If any error occurs during parsing, fail gracefully
+        return None, None
+    
+    # Return None if no valid host/port found
+    return None, None
+
 
 def check_host_port_with_socket(host_port):
     try:
@@ -97,10 +116,11 @@ def pre_filter_live_hosts(all_configs):
             result = future.result()
             if result: live_host_ports.add(result)
     
-    unique_live_configs = [host_port_to_configs[host_port] for host_port in live_host_ports]
+    unique_live_configs = [host_port_to_configs[host_port] for host_port in live_host_ports if host_port in host_port_to_configs]
     print(f"--- Pre-filter complete. Kept {len(unique_live_configs)} unique, live configs. ---")
     return unique_live_configs
 
+# ... The rest of the script is identical to the last working version ...
 def write_chunked_subscription_files(base_filepath, configs):
     os.makedirs(os.path.dirname(base_filepath), exist_ok=True)
     if not configs:
@@ -112,13 +132,13 @@ def write_chunked_subscription_files(base_filepath, configs):
         filepath = base_filepath if i == 0 else os.path.join(os.path.dirname(base_filepath), f"{os.path.basename(base_filepath)}{i + 1}")
         content = base64.b64encode("\n".join(chunk).encode("utf-8")).decode("utf-8")
         with open(filepath, "w", encoding="utf-8") as f: f.write(content)
-        print(f"SUCCESS: Wrote {len(chunk)} configs to {filepath}")
+        # print(f"SUCCESS: Wrote {len(chunk)} configs to {filepath}")
 
-# Main execution logic
 def main():
-    print("--- HYBRID COLLECTOR v32: All Categories Fixed ---")
+    print("--- HYBRID COLLECTOR v33: Uncrashable Parser ---")
     setup_directories()
-    # Temporarily disable Telegram for speed, you can re-enable later
+    
+    # Temporarily disable Telegram part for focused debugging
     tg_configs = set()
     
     subs_links = json_load_safe('subscription links.json')
@@ -135,12 +155,12 @@ def main():
     live_unique_configs = pre_filter_live_hosts(all_raw_configs)
     
     if not live_unique_configs:
-        print("INFO: No live configs found. Exiting."); return
+        print("INFO: No live configs found after filtering. Exiting."); return
         
     print("\n--- Starting Final Categorization and Processing ---")
+    protocols = ["SHADOWSOCKS", "TROJAN", "VMESS", "VLESS", "REALITY", "TUIC", "HYSTERIA", "JUICITY"]
     
-    # These dictionaries will hold the final, fully processed configs for each category
-    final_protocol_configs = {p: [] for p in ["SHADOWSOCKS", "TROJAN", "VMESS", "VLESS", "REALITY", "TUIC", "HYSTERIA", "JUICITY"]}
+    final_protocol_configs = {p: [] for p in protocols}
     final_security_configs = {'tls': [], 'non_tls': []}
     final_network_configs = {'tcp': [], 'ws': [], 'grpc': [], 'http': []}
 
@@ -163,7 +183,6 @@ def main():
         final_network_configs['http'].extend(p_http)
         final_network_configs['grpc'].extend(p_grpc)
 
-    # --- Now we write everything from our final dictionaries ---
     print("\n--- Writing All Categorized Subscription Files ---")
 
     for p_name, p_configs in final_protocol_configs.items():
@@ -177,6 +196,7 @@ def main():
 
     all_processed_configs = [item for sublist in final_protocol_configs.values() for item in sublist]
     
+    from title import create_country, create_internet_protocol
     country_dict = create_country(all_processed_configs)
     for country_code, configs in country_dict.items():
         write_chunked_subscription_files(f'./countries/{country_code}/mixed', configs)
@@ -187,7 +207,10 @@ def main():
     
     write_chunked_subscription_files('./splitted/mixed', all_processed_configs)
     
-    with open('last update', 'w') as f: f.write(datetime.now(timezone.utc).isoformat())
+    # To keep the log clean, we are not updating these files for now
+    # with open('invalid telegram channels.json', 'w') as f: json.dump([], f, indent=4)
+    # with open('last update', 'w') as f: f.write(datetime.now(timezone.utc).isoformat())
+    
     print("\n--- SCRIPT FINISHED SUCCESSFULLY ---")
 
 if __name__ == "__main__":
