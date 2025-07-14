@@ -2,11 +2,17 @@ name: Run V2Ray Collector
 
 on:
   schedule:
-    - cron: '*/44 * * * *' # Every 44 minutes
+    # This runs approximately every 44 minutes.
+    # Note: GitHub Actions schedules can have a slight delay.
+    - cron: '*/44 * * * *'
   workflow_dispatch:
 
 jobs:
   build:
+    # The rest of the file is correct and does not need to be changed.
+    # ...
+    permissions:
+      contents: write
     runs-on: ubuntu-latest
     timeout-minutes: 55
 
@@ -19,7 +25,7 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Install Python Dependencies
+      - name: Install dependencies
         run: |
           pip install -r requirements.txt
 
