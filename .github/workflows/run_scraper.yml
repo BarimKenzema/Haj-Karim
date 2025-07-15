@@ -4,7 +4,7 @@ on:
   schedule:
     # This runs approximately every 44 minutes.
     # Note: GitHub Actions schedules can have a slight delay.
-    - cron: '*/44 * * * *'
+    - cron: '*/66 * * * *'
   workflow_dispatch:
 
 jobs:
