@@ -2,18 +2,14 @@ name: Run V2Ray Collector
 
 on:
   schedule:
-    # This runs approximately every 44 minutes.
-    # Note: GitHub Actions schedules can have a slight delay.
-    - cron: '*/66 * * * *'
+    - cron: '*/44 * * * *'
   workflow_dispatch:
 
 jobs:
   build:
-    # The rest of the file is correct and does not need to be changed.
-    # ...
-    permissions:
-      contents: write
-    runs-on: ubuntu-latest
+    # --- THIS IS THE KEY CHANGE ---
+    runs-on: windows-latest
+    
     timeout-minutes: 55
 
     steps:
@@ -25,9 +21,8 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Install dependencies
-        run: |
-          pip install -r requirements.txt
+      - name: Install Python Dependencies
+        run: pip install -r requirements.txt
 
       - name: Run Python script
         env:
@@ -36,14 +31,7 @@ jobs:
           TELETHON_SESSION: ${{ secrets.TELETHON_SESSION }}
         run: python main.py
 
-      - name: Commit and Force Push changes
-        run: |
-          git config --global user.name "GitHub Actions Bot"
-          git config --global user.email "actions@github.com"
-          git add -A
-          if ! git diff --staged --quiet; then
-            git commit -m "✅ Automated Config Update"
-            git push --force
-          else
-            echo "No changes to commit."
-          fi
+      - name: Commit and push changes
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "✅ Automated Config Update (from Windows Runner)"
