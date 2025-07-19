@@ -1,4 +1,4 @@
-name: Run V2Ray Collector
+name: Run V2Ray Collector (Linux)
 
 on:
   schedule:
@@ -7,9 +7,11 @@ on:
 
 jobs:
   build:
-    # --- THIS IS THE KEY CHANGE ---
-    runs-on: windows-latest
+    # This specifies the Linux runner
+    runs-on: ubuntu-latest
     
+    permissions:
+      contents: write
     timeout-minutes: 99
 
     steps:
@@ -34,4 +36,4 @@ jobs:
       - name: Commit and push changes
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
-          commit_message: "✅ Automated Config Update (from Windows Runner)"
+          commit_message: "✅ Automated Config Update (Linux)"
