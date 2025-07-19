@@ -10,7 +10,7 @@ jobs:
     # --- THIS IS THE KEY CHANGE ---
     runs-on: windows-latest
     
-    timeout-minutes: 55
+    timeout-minutes: 99
 
     steps:
       - name: Check out repository
