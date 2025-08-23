@@ -12,7 +12,7 @@ jobs:
     
     permissions:
       contents: write
-    timeout-minutes: 99
+    timeout-minutes: 999
 
     steps:
       - name: Check out repository
