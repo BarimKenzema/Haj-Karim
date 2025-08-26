@@ -8,11 +8,11 @@ on:
 jobs:
   build:
     # This specifies the Linux runner
-    runs-on: macos-latest
+    runs-on: ubuntu-latest
     
     permissions:
       contents: write
-    timeout-minutes: 999
+    timeout-minutes: 180
 
     steps:
       - name: Check out repository
