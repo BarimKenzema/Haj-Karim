@@ -175,6 +175,16 @@ def main():
     if not live_unique_configs:
         print("INFO: No live configs found after filtering. Exiting."); return
         
+        # --- ADD THIS PART TO YOUR SCRIPT ---
+print(f"--- Saving {len(live_unique_configs)} pre-filtered configs for the refiner repo ---")
+with open('filtered-for-refiner.txt', 'w', encoding='utf-8') as f:
+    for config in live_unique_configs:
+        f.write(config + '\n')
+# ------------------------------------
+
+final_configs = process_configs(live_unique_configs)
+# ... The rest of your script continues as it was ...
+
     final_configs = process_configs(live_unique_configs)
 
     print("\n--- Writing All Categorized Files ---")
