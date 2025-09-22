@@ -1,5 +1,5 @@
 # FILE: main.py (for your FIRST repo: v2ray-collector)
-# FINAL SCRIPT v37-S1: Base Collector with Strategy 1 (GitHub Scraping)
+# FINAL SCRIPT v37-S1-FINAL: Collector with GitHub Scanning Restored
 
 import os, json, re, base64, time, traceback, socket, ipaddress
 import requests
@@ -8,50 +8,54 @@ import concurrent.futures
 import geoip2.database
 from dns import resolver
 
-print("--- BASE COLLECTOR & PRE-FILTERER v37-S1 START ---")
+print("--- BASE COLLECTOR & PRE-FILTERER v37-S1-FINAL START ---")
 
 # --- CONFIGURATION ---
 CONFIG_CHUNK_SIZE = 444
 MAX_PREFILTER_WORKERS = 100
-GITHUB_TOKEN = os.environ.get('NEW_API_TOKEN')
+# --- IMPORTANT: This now looks for the valid secret name you created ---
+COLLECTOR_TOKEN = os.environ.get('COLLECTOR_TOKEN')
 
-# --- NEW: STRATEGY 1 - GITHUB SCRAPING FUNCTION ---
+# --- STRATEGY 1 - GITHUB SCRAPING FUNCTION ---
 def fetch_from_github():
     print("--- Fetching configs from GitHub ---")
-    if not GITHUB_TOKEN:
-        print("WARNING: NEW_API_TOKEN secret not set. Skipping GitHub scrape.")
+    if not COLLECTOR_TOKEN:
+        print("WARNING: COLLECTOR_TOKEN secret not found or empty. Skipping GitHub scrape.")
         return set()
     
     configs = set()
-    headers = {'Authorization': f'token {GITHUB_TOKEN}'}
-    # A broad search for files that are likely to contain subscription links or raw configs
+    # Use the raw content header for more direct access
+    headers = {'Authorization': f'token {COLLECTOR_TOKEN}', 'Accept': 'application/vnd.github.v3.raw'}
+    # Targeted search queries to find fresh subscription links and raw configs
     queries = [
-        "filename:subscribe", "filename:v2ray", "filename:config", "filename:clash",
-        "b64 vless", "b64 vmess"
+        "vless+path:README.md", "vmess+path:README.md", "trojan+path:README.md",
+        "ss+path:README.md", "hy2+path:README.md", "juicity+path:README.md",
+        "filename:sub", "filename:subscribe", "filename:v2ray"
     ]
     
     for query in queries:
-        search_url = f"https://api.github.com/search/code?q={query}&per_page=50"
+        # Sort by most recently indexed and search files updated in the last week to prioritize freshness
+        search_url = f"https://api.github.com/search/code?q={query}&sort=indexed&order=desc&per_page=50"
         try:
             res = requests.get(search_url, headers=headers, timeout=20)
-            res.raise_for_status()
+            res.raise_for_status() # Will raise an error for bad status (like 401 Unauthorized)
             items = res.json().get('items', [])
             print(f"Found {len(items)} potential files on GitHub for query '{query}'.")
             
             for item in items:
-                time.sleep(1) # Be respectful of API rate limits
-                raw_url = item.get('html_url').replace('github.com', 'raw.githubusercontent.com').replace('/blob/', '/')
+                time.sleep(0.5) # Be respectful of API rate limits
+                raw_url = item.get('url') # The API URL for raw content
                 try:
-                    content_res = requests.get(raw_url, timeout=10)
+                    content_res = requests.get(raw_url, headers=headers, timeout=10)
                     if content_res.status_code == 200:
                         content = content_res.text
-                        # Check if it's base64 encoded
-                        if re.match(r'^[A-Za-z0-9+/=]+$', content.strip().replace('\n', '')):
+                        # Attempt to decode if it looks like base64
+                        if re.match(r'^[A-Za-z0-9+/=]{100,}$', content.strip().replace('\n', '')):
                             try: content = base64.b64decode(content).decode('utf-8', 'ignore')
                             except: pass
                         configs.update(find_configs_raw(content))
                 except Exception:
-                    continue
+                    continue # Silently ignore errors for individual files
         except Exception as e:
             print(f"ERROR: Failed to fetch from GitHub with query '{query}': {e}")
             break # Stop if we hit a major error like rate limiting
@@ -136,7 +140,6 @@ def pre_filter_live_hosts(all_configs):
     print(f"--- Pre-filter complete. Kept {len(unique_live_configs)} unique, live configs. ---")
     return unique_live_configs
 
-# (The rest of the helper functions are the same as the previous full version)
 def get_country_from_ip(ip, geoip_reader):
     if not geoip_reader: return "XX"
     try: return geoip_reader.country(ip).country.iso_code or "XX"
@@ -180,8 +183,6 @@ def main():
     setup_directories()
     
     all_raw_configs = set()
-
-    # --- UPDATED: Load from both subscription file and GitHub ---
     print("--- Collecting from subscription links.json ---")
     subs_links = json_load_safe('subscription links.json')
     for link in subs_links:
@@ -192,7 +193,7 @@ def main():
             all_raw_configs.update(find_configs_raw(content))
         except: continue
     print(f"Found {len(all_raw_configs)} configs from local file.")
-
+    
     all_raw_configs.update(fetch_from_github())
     print(f"--- Total unique configs from all sources: {len(all_raw_configs)} ---")
     
@@ -204,7 +205,6 @@ def main():
         for config in live_unique_configs: f.write(config + '\n')
     print(f"--- Saved {len(live_unique_configs)} pre-filtered configs to filtered-for-refiner.txt ---")
 
-    # (The rest of the main function continues as normal to generate its own files)
     db_path = "./geoip.mmdb"
     if not os.path.exists(db_path):
         try:
@@ -219,6 +219,8 @@ def main():
     
     final_configs = process_configs(live_unique_configs, geoip_reader)
     by_protocol = {p: [] for p in ["vless", "vmess", "trojan", "ss", "reality"]}
+    by_country = create_country_dict(final_configs)
+    
     for config in final_configs:
         try:
             proto = config.split('://')[0]
@@ -227,7 +229,9 @@ def main():
         except: continue
     
     for p, clist in by_protocol.items(): write_chunked_subscription_files(f'./protocols/{p}', clist)
+    for c, clist in by_country.items(): write_chunked_subscription_files(f'./countries/{c}', clist)
     write_chunked_subscription_files('./splitted/mixed', final_configs)
+    
     print("\n--- SCRIPT FINISHED SUCCESSFULLY ---")
 
 if __name__ == "__main__":
