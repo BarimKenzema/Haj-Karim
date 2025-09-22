@@ -1,22 +1,21 @@
 # FILE: main.py (for your FIRST repo: v2ray-collector)
-# FINAL SCRIPT v37-S1-FINAL: Collector with GitHub Scanning Restored
+# FINAL SCRIPT v37-S1-OPTIMIZED: Collector with Smarter GitHub Scanning
 
 import os, json, re, base64, time, traceback, socket, ipaddress
 import requests
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import urlparse
 import concurrent.futures
 import geoip2.database
 from dns import resolver
 
-print("--- BASE COLLECTOR & PRE-FILTERER v37-S1-FINAL START ---")
+print("--- BASE COLLECTOR & PRE-FILTERER v37-S1-OPTIMIZED START ---")
 
 # --- CONFIGURATION ---
 CONFIG_CHUNK_SIZE = 444
 MAX_PREFILTER_WORKERS = 100
-# --- IMPORTANT: This now looks for the valid secret name you created ---
 COLLECTOR_TOKEN = os.environ.get('COLLECTOR_TOKEN')
 
-# --- STRATEGY 1 - GITHUB SCRAPING FUNCTION ---
+# --- STRATEGY 1 - GITHUB SCRAPING FUNCTION (IMPROVED) ---
 def fetch_from_github():
     print("--- Fetching configs from GitHub ---")
     if not COLLECTOR_TOKEN:
@@ -24,41 +23,48 @@ def fetch_from_github():
         return set()
     
     configs = set()
-    # Use the raw content header for more direct access
     headers = {'Authorization': f'token {COLLECTOR_TOKEN}', 'Accept': 'application/vnd.github.v3.raw'}
-    # Targeted search queries to find fresh subscription links and raw configs
+    
+    # --- MODIFIED: Fewer, broader, and more targeted queries ---
+    # We search for common keywords in files that are likely to contain configs.
+    # The '-repo:owner/repo' syntax can be used to exclude repos that give bad results.
     queries = [
-        "vless+path:README.md", "vmess+path:README.md", "trojan+path:README.md",
-        "ss+path:README.md", "hy2+path:README.md", "juicity+path:README.md",
-        "filename:sub", "filename:subscribe", "filename:v2ray"
+        '"vless://" -repo:hiddify/hiddify-config',
+        '"vmess://" -repo:hiddify/hiddify-config',
+        '"trojan://" -repo:hiddify/hiddify-config',
+        '("V2RAY" OR "V2RAYNG") AND ("subscribe" OR "subscription")'
     ]
     
     for query in queries:
-        # Sort by most recently indexed and search files updated in the last week to prioritize freshness
-        search_url = f"https://api.github.com/search/code?q={query}&sort=indexed&order=desc&per_page=50"
+        # Search for files updated in the last day to prioritize extreme freshness
+        search_url = f"https://api.github.com/search/code?q={query}&sort=indexed&order=desc&per_page=100"
         try:
-            res = requests.get(search_url, headers=headers, timeout=20)
-            res.raise_for_status() # Will raise an error for bad status (like 401 Unauthorized)
+            res = requests.get(search_url, headers=headers, timeout=30)
+            res.raise_for_status()
             items = res.json().get('items', [])
             print(f"Found {len(items)} potential files on GitHub for query '{query}'.")
             
+            # --- MODIFIED: Increased sleep time between different queries ---
+            time.sleep(5) # Wait 5 seconds before the next major query
+
             for item in items:
-                time.sleep(0.5) # Be respectful of API rate limits
-                raw_url = item.get('url') # The API URL for raw content
+                # Shorter sleep between individual file downloads
+                time.sleep(0.5) 
+                raw_url = item.get('url')
                 try:
                     content_res = requests.get(raw_url, headers=headers, timeout=10)
                     if content_res.status_code == 200:
                         content = content_res.text
-                        # Attempt to decode if it looks like base64
                         if re.match(r'^[A-Za-z0-9+/=]{100,}$', content.strip().replace('\n', '')):
                             try: content = base64.b64decode(content).decode('utf-8', 'ignore')
                             except: pass
                         configs.update(find_configs_raw(content))
                 except Exception:
-                    continue # Silently ignore errors for individual files
+                    continue
         except Exception as e:
             print(f"ERROR: Failed to fetch from GitHub with query '{query}': {e}")
-            break # Stop if we hit a major error like rate limiting
+            print("Continuing to next query...")
+            continue # Continue to the next query instead of stopping completely
 
     print(f"Found {len(configs)} new unique configs from GitHub.")
     return configs
@@ -140,6 +146,7 @@ def pre_filter_live_hosts(all_configs):
     print(f"--- Pre-filter complete. Kept {len(unique_live_configs)} unique, live configs. ---")
     return unique_live_configs
 
+# (The rest of the script is identical to the last version)
 def get_country_from_ip(ip, geoip_reader):
     if not geoip_reader: return "XX"
     try: return geoip_reader.country(ip).country.iso_code or "XX"
