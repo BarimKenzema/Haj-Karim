@@ -1,5 +1,5 @@
 # FILE: main.py (for your FIRST repo: v2ray-collector)
-# FINAL SCRIPT v37-S1-OPTIMIZED: Collector with Smarter GitHub Scanning
+# FINAL SCRIPT v37-S1-FINAL-OPTIMIZED: Final Collector with Optimized GitHub Scanning
 
 import os, json, re, base64, time, traceback, socket, ipaddress
 import requests
@@ -8,14 +8,14 @@ import concurrent.futures
 import geoip2.database
 from dns import resolver
 
-print("--- BASE COLLECTOR & PRE-FILTERER v37-S1-OPTIMIZED START ---")
+print("--- BASE COLLECTOR & PRE-FILTERER v37-S1-FINAL-OPTIMIZED START ---")
 
 # --- CONFIGURATION ---
 CONFIG_CHUNK_SIZE = 444
 MAX_PREFILTER_WORKERS = 100
 COLLECTOR_TOKEN = os.environ.get('COLLECTOR_TOKEN')
 
-# --- STRATEGY 1 - GITHUB SCRAPING FUNCTION (IMPROVED) ---
+# --- STRATEGY 1 - GITHUB SCRAPING FUNCTION (FINAL VERSION) ---
 def fetch_from_github():
     print("--- Fetching configs from GitHub ---")
     if not COLLECTOR_TOKEN:
@@ -25,14 +25,14 @@ def fetch_from_github():
     configs = set()
     headers = {'Authorization': f'token {COLLECTOR_TOKEN}', 'Accept': 'application/vnd.github.v3.raw'}
     
-    # --- MODIFIED: Fewer, broader, and more targeted queries ---
-    # We search for common keywords in files that are likely to contain configs.
-    # The '-repo:owner/repo' syntax can be used to exclude repos that give bad results.
+    # --- MODIFIED: Replaced the complex query with two simpler, more reliable ones ---
     queries = [
-        '"vless://" -repo:hiddify/hiddify-config',
-        '"vmess://" -repo:hiddify/hiddify-config',
-        '"trojan://" -repo:hiddify/hiddify-config',
-        '("V2RAY" OR "V2RAYNG") AND ("subscribe" OR "subscription")'
+        '"vless://"',
+        '"vmess://"',
+        '"trojan://"',
+        '"ss://"',
+        'filename:subscribe "V2RAY"', # Search for "V2RAY" in files named "subscribe"
+        'path:sub "V2RAYNG"'         # Search for "V2RAYNG" in files in a "sub" folder
     ]
     
     for query in queries:
@@ -44,11 +44,10 @@ def fetch_from_github():
             items = res.json().get('items', [])
             print(f"Found {len(items)} potential files on GitHub for query '{query}'.")
             
-            # --- MODIFIED: Increased sleep time between different queries ---
-            time.sleep(5) # Wait 5 seconds before the next major query
+            # Wait 5 seconds between each major query to be respectful of the API
+            time.sleep(5) 
 
             for item in items:
-                # Shorter sleep between individual file downloads
                 time.sleep(0.5) 
                 raw_url = item.get('url')
                 try:
@@ -64,7 +63,7 @@ def fetch_from_github():
         except Exception as e:
             print(f"ERROR: Failed to fetch from GitHub with query '{query}': {e}")
             print("Continuing to next query...")
-            continue # Continue to the next query instead of stopping completely
+            continue
 
     print(f"Found {len(configs)} new unique configs from GitHub.")
     return configs
