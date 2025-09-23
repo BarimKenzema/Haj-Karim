@@ -1,21 +1,21 @@
 # FILE: main.py (for your FIRST repo: v2ray-collector)
-# FINAL SCRIPT v37-S1-FINAL-OPTIMIZED: Final Collector with Optimized GitHub Scanning
+# FINAL SCRIPT v37-S1-CORRECTED: Collector with GitHub & Network Categories Restored
 
 import os, json, re, base64, time, traceback, socket, ipaddress
 import requests
-from urllib.parse import urlparse
+from urllib.parse import urlparse, parse_qs
 import concurrent.futures
 import geoip2.database
 from dns import resolver
 
-print("--- BASE COLLECTOR & PRE-FILTERER v37-S1-FINAL-OPTIMIZED START ---")
+print("--- BASE COLLECTOR & PRE-FILTERER v37-S1-CORRECTED START ---")
 
 # --- CONFIGURATION ---
 CONFIG_CHUNK_SIZE = 444
 MAX_PREFILTER_WORKERS = 100
 COLLECTOR_TOKEN = os.environ.get('COLLECTOR_TOKEN')
 
-# --- STRATEGY 1 - GITHUB SCRAPING FUNCTION (FINAL VERSION) ---
+# --- STRATEGY 1 - GITHUB SCRAPING FUNCTION ---
 def fetch_from_github():
     print("--- Fetching configs from GitHub ---")
     if not COLLECTOR_TOKEN:
@@ -25,18 +25,16 @@ def fetch_from_github():
     configs = set()
     headers = {'Authorization': f'token {COLLECTOR_TOKEN}', 'Accept': 'application/vnd.github.v3.raw'}
     
-    # --- MODIFIED: Replaced the complex query with two simpler, more reliable ones ---
     queries = [
         '"vless://"',
         '"vmess://"',
         '"trojan://"',
         '"ss://"',
-        'filename:subscribe "V2RAY"', # Search for "V2RAY" in files named "subscribe"
-        'path:sub "V2RAYNG"'         # Search for "V2RAYNG" in files in a "sub" folder
+        'filename:subscribe "V2RAY"',
+        'path:sub "V2RAYNG"'
     ]
     
     for query in queries:
-        # Search for files updated in the last day to prioritize extreme freshness
         search_url = f"https://api.github.com/search/code?q={query}&sort=indexed&order=desc&per_page=100"
         try:
             res = requests.get(search_url, headers=headers, timeout=30)
@@ -44,7 +42,6 @@ def fetch_from_github():
             items = res.json().get('items', [])
             print(f"Found {len(items)} potential files on GitHub for query '{query}'.")
             
-            # Wait 5 seconds between each major query to be respectful of the API
             time.sleep(5) 
 
             for item in items:
@@ -145,7 +142,6 @@ def pre_filter_live_hosts(all_configs):
     print(f"--- Pre-filter complete. Kept {len(unique_live_configs)} unique, live configs. ---")
     return unique_live_configs
 
-# (The rest of the script is identical to the last version)
 def get_country_from_ip(ip, geoip_reader):
     if not geoip_reader: return "XX"
     try: return geoip_reader.country(ip).country.iso_code or "XX"
@@ -224,19 +220,33 @@ def main():
         except Exception: pass
     
     final_configs = process_configs(live_unique_configs, geoip_reader)
+    
+    # --- THIS ENTIRE BLOCK HAS BEEN RESTORED ---
+    print("\n--- Writing All Categorized Files ---")
     by_protocol = {p: [] for p in ["vless", "vmess", "trojan", "ss", "reality"]}
+    by_network = {'tcp': [], 'ws': [], 'grpc': [], 'http': []} # Restored
     by_country = create_country_dict(final_configs)
     
     for config in final_configs:
         try:
+            # Protocol Categorization
             proto = config.split('://')[0]
             if proto in by_protocol: by_protocol[proto].append(config)
             if 'reality' in config.lower(): by_protocol['reality'].append(config)
+            
+            # Network Categorization (Restored)
+            parsed = urlparse(config)
+            params = parse_qs(parsed.query)
+            net = params.get('type', ['tcp'])[0].lower()
+            if net in by_network: by_network[net].append(config)
         except: continue
     
+    # Writing all category files (Restored)
     for p, clist in by_protocol.items(): write_chunked_subscription_files(f'./protocols/{p}', clist)
+    for n, clist in by_network.items(): write_chunked_subscription_files(f'./networks/{n}', clist)
     for c, clist in by_country.items(): write_chunked_subscription_files(f'./countries/{c}', clist)
     write_chunked_subscription_files('./splitted/mixed', final_configs)
+    # ----------------------------------------------
     
     print("\n--- SCRIPT FINISHED SUCCESSFULLY ---")
 
