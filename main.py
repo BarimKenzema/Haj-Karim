@@ -169,6 +169,35 @@ def main():
         for config in live_unique_configs: f.write(config + '\n')
     print(f"--- Saved {len(live_unique_configs)} pre-filtered configs to filtered-for-refiner.txt ---")
     
+    # --- NEW: Logic to gather REALITY+gRPC configs ---
+    print("\n--- Searching for REALITY+gRPC configs from the live set... ---")
+    reality_grpc_configs = []
+    for config in live_unique_configs:
+        text_to_check = ""
+        # For VMess, we must decode it to check the inner settings
+        if config.startswith("vmess://"):
+            try:
+                json_str = config.replace("vmess://", "").strip()
+                if len(json_str) % 4 != 0: json_str += '=' * (4 - len(json_str) % 4)
+                text_to_check = base64.b64decode(json_str).decode('utf-8', 'ignore')
+            except Exception:
+                continue # Skip malformed configs
+        else:
+            # For other protocols (VLESS, Trojan, etc.), the raw config string is enough
+            text_to_check = config
+        
+        # Check if both keywords are present in the relevant text
+        if "reality" in text_to_check.lower() and "grpc" in text_to_check.lower():
+            reality_grpc_configs.append(config)
+
+    if reality_grpc_configs:
+        with open('reality-grpc-configs.txt', 'w', encoding='utf-8') as f:
+            for cfg in reality_grpc_configs:
+                f.write(cfg + '\n')
+        print(f"--- Found and saved {len(reality_grpc_configs)} REALITY+gRPC configs to reality-grpc-configs.txt ---")
+    else:
+        print("--- No live REALITY+gRPC configs were found. ---")
+    
     print("\n--- COLLECTOR SCRIPT FINISHED SUCCESSFULLY ---")
 
 if __name__ == "__main__":
