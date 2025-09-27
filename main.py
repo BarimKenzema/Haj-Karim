@@ -1,18 +1,21 @@
-# FINAL SCRIPT v38-S1-IRAN-SEARCH: Collector with Enhanced Iranian Search Queries
+# FILE: main.py (for your FIRST repo: v2ray-collector)
+# FINAL SCRIPT v38-S1-FULL-RESTORED: All Features and Categorization Combined
 
 import os, json, re, base64, time, traceback, socket, ipaddress
 import requests
-from urllib.parse import urlparse
+from urllib.parse import urlparse, parse_qs
 import concurrent.futures
+import geoip2.database
+from dns import resolver
 
-print("--- BASE COLLECTOR & PRE-FILTERER v38-S1-IRAN-SEARCH START ---")
+print("--- BASE COLLECTOR & PRE-FILTERER v38-S1-FULL-RESTORED START ---")
 
 # --- CONFIGURATION ---
-CONFIG_CHUNK_SIZE = 444
+CONFIG_CHUNK_SIZE = 4444444444444444
 MAX_PREFILTER_WORKERS = 100
 COLLECTOR_TOKEN = os.environ.get('COLLECTOR_TOKEN')
 
-# --- STRATEGY 1 - GITHUB SCRAPING FUNCTION ---
+# --- YOUR CUSTOM GITHUB SCRAPING FUNCTION (PRESERVED) ---
 def fetch_from_github():
     print("--- Fetching configs from GitHub with enhanced search queries ---")
     if not COLLECTOR_TOKEN:
@@ -22,19 +25,10 @@ def fetch_from_github():
     configs = set()
     headers = {'Authorization': f'token {COLLECTOR_TOKEN}', 'Accept': 'application/vnd.github.v3.raw'}
     
-    # These queries target repositories and files that use Persian keywords
-    # related to circumvention tools and major Iranian ISPs.
     queries = [
-        '"vless" "کانفیگ" "رایگان"',
-        '"vmess" "ایرانسل"',
-        '"trojan" "همراه اول"',
-        '"v2ray" "رایتل"',
-        'filename:subscribe "v2ray" "ایران"',
-        'path:config "vless" "رایگان"',
-        '"ss://"',
-        '"reality" "کانفیگ"',
-        'filename:all.txt "vmess://"',
-        'path:nodes "vless://"'
+        '"vless" "کانفیگ" "رایگان"', '"vmess" "ایرانسل"', '"trojan" "همراه اول"',
+        '"v2ray" "رایتل"', 'filename:subscribe "v2ray" "ایران"', 'path:config "vless" "رایگان"',
+        '"ss://"', '"reality" "کانفیگ"', 'filename:all.txt "vmess://"', 'path:nodes "vless://"'
     ]
     
     for query in queries:
@@ -54,16 +48,11 @@ def fetch_from_github():
                     if content_res.status_code == 200:
                         content = content_res.text
                         if re.match(r'^[A-Za-z0-9+/=]{100,}$', content.strip().replace('\n', '')):
-                            try: 
-                                content = base64.b64decode(content).decode('utf-8', 'ignore')
-                            except Exception:
-                                pass
-                        
+                            try: content = base64.b64decode(content).decode('utf-8', 'ignore')
+                            except Exception: pass
                         found_in_file = find_configs_raw(content)
-                        if found_in_file:
-                           configs.update(found_in_file)
-                except Exception:
-                    continue
+                        if found_in_file: configs.update(found_in_file)
+                except Exception: continue
         except Exception as e:
             print(f"ERROR: Failed to fetch from GitHub with query '{query}': {e}")
             if 'rate limit' in str(e).lower():
@@ -74,7 +63,20 @@ def fetch_from_github():
     print(f"Found {len(configs)} new unique configs from GitHub.")
     return configs
 
-# --- HELPER FUNCTIONS ---
+# --- RESTORED HELPER FUNCTIONS ---
+def setup_directories():
+    import shutil
+    dirs = ['./splitted', './subscribe', './protocols', './networks', './countries', './security']
+    for d in dirs:
+        if os.path.exists(d): shutil.rmtree(d)
+        os.makedirs(d)
+    print("INFO: All necessary directories are clean.")
+
+def json_load_safe(path):
+    try:
+        with open(path, 'r', encoding='utf-8') as f: return json.load(f)
+    except: return []
+
 def find_configs_raw(text):
     if not text: return []
     pattern = r'(?:vless|vmess|trojan|ss|hy2|hysteria|tuic|juicity)://[^\s<>"\'`]+'
@@ -93,7 +95,6 @@ def get_host_port_from_config(config):
     except: return None, None
 
 def get_ips(node):
-    from dns import resolver
     try:
         if not node or not isinstance(node, str): return None
         if ipaddress.ip_address(node): return [node]
@@ -139,24 +140,51 @@ def pre_filter_live_hosts(all_configs):
     print(f"--- Pre-filter complete. Kept {len(unique_live_configs)} unique, live configs. ---")
     return unique_live_configs
 
+def get_country_from_ip(ip, geoip_reader):
+    if not geoip_reader: return "XX"
+    try: return geoip_reader.country(ip).country.iso_code or "XX"
+    except: return "XX"
+
+def process_configs(configs_to_process, geoip_reader):
+    processed_configs = []; print(f"\n--- Processing {len(configs_to_process)} live configs... ---")
+    for element in configs_to_process:
+        try:
+            host, port = get_host_port_from_config(element)
+            if not host or not port: continue
+            ips = get_ips(host);
+            if not ips: continue
+            country_code = get_country_from_ip(ips[0], geoip_reader)
+            processed_configs.append(urlparse(element)._replace(fragment=f"#{country_code}-{host}").geturl())
+        except: continue
+    return processed_configs
+
+def write_chunked_subscription_files(base_filepath, configs):
+    os.makedirs(os.path.dirname(base_filepath), exist_ok=True)
+    if not configs:
+        with open(base_filepath, "w") as f: f.write(""); return
+    chunks = [configs[i:i + CONFIG_CHUNK_SIZE] for i in range(0, len(configs), CONFIG_CHUNK_SIZE)]
+    for i, chunk in enumerate(chunks):
+        filepath = base_filepath if i == 0 else os.path.join(os.path.dirname(base_filepath), f"{os.path.basename(base_filepath)}{i + 1}")
+        content = base64.b64encode("\n".join(chunk).encode("utf-8")).decode("utf-8")
+        with open(filepath, "w", encoding="utf-8") as f: f.write(content)
+
 # --- MAIN EXECUTION ---
 def main():
+    # --- RESTORED: Setup all directories at the start ---
+    setup_directories()
+
     all_raw_configs = set()
     print("--- Collecting from subscription links.json ---")
-    try:
-        with open('subscription links.json', 'r', encoding='utf-8') as f:
-            subs_links = json.load(f)
-        for link in subs_links:
-            try:
-                content = requests.get(link, timeout=15).text
-                if re.match(r'^[A-Za-z0-9+/=]{100,}$', content.strip().replace('\n', '')):
-                  try: content = base64.b64decode(content).decode('utf-8', 'ignore')
-                  except: pass
-                all_raw_configs.update(find_configs_raw(content))
-            except: continue
-        print(f"Found {len(all_raw_configs)} configs from local subscription file.")
-    except Exception as e:
-        print(f"Could not read 'subscription links.json'. Error: {e}")
+    subs_links = json_load_safe('subscription links.json')
+    for link in subs_links:
+        try:
+            content = requests.get(link, timeout=15).text
+            if re.match(r'^[A-Za-z0-9+/=]{100,}$', content.strip().replace('\n', '')):
+                try: content = base64.b64decode(content).decode('utf-8', 'ignore')
+                except: pass
+            all_raw_configs.update(find_configs_raw(content))
+        except: continue
+    print(f"Found {len(all_raw_configs)} configs from local subscription file.")
     
     all_raw_configs.update(fetch_from_github())
     print(f"--- Total unique configs from all sources: {len(all_raw_configs)} ---")
@@ -165,41 +193,53 @@ def main():
     if not live_unique_configs:
         print("INFO: No live configs found after filtering. Exiting."); return
         
+    # --- Output 1: Save the full list for Repo B (Preserved) ---
     with open('filtered-for-refiner.txt', 'w', encoding='utf-8') as f:
         for config in live_unique_configs: f.write(config + '\n')
     print(f"--- Saved {len(live_unique_configs)} pre-filtered configs to filtered-for-refiner.txt ---")
     
-    # --- NEW: Logic to gather REALITY+gRPC configs ---
+    # --- Output 2: Your special REALITY+gRPC search (Preserved) ---
     print("\n--- Searching for REALITY+gRPC configs from the live set... ---")
     reality_grpc_configs = []
     for config in live_unique_configs:
         text_to_check = ""
-        # For VMess, we must decode it to check the inner settings
         if config.startswith("vmess://"):
             try:
                 json_str = config.replace("vmess://", "").strip()
                 if len(json_str) % 4 != 0: json_str += '=' * (4 - len(json_str) % 4)
                 text_to_check = base64.b64decode(json_str).decode('utf-8', 'ignore')
-            except Exception:
-                continue # Skip malformed configs
+            except Exception: continue
         else:
-            # For other protocols (VLESS, Trojan, etc.), the raw config string is enough
             text_to_check = config
         
-        # Check if both keywords are present in the relevant text
         if "reality" in text_to_check.lower() and "grpc" in text_to_check.lower():
             reality_grpc_configs.append(config)
 
     if reality_grpc_configs:
         with open('reality-grpc-configs.txt', 'w', encoding='utf-8') as f:
-            for cfg in reality_grpc_configs:
-                f.write(cfg + '\n')
+            for cfg in reality_grpc_configs: f.write(cfg + '\n')
         print(f"--- Found and saved {len(reality_grpc_configs)} REALITY+gRPC configs to reality-grpc-configs.txt ---")
     else:
         print("--- No live REALITY+gRPC configs were found. ---")
     
-    print("\n--- COLLECTOR SCRIPT FINISHED SUCCESSFULLY ---")
-
-if __name__ == "__main__":
-    try: main()
-    except Exception: print(f"\n--- FATAL UNHANDLED ERROR ---"); traceback.print_exc(); exit(1)
+    # --- Output 3: RESTORED - Full Categorization for Repo A's own files ---
+    print("\n--- Starting full categorization for this repo's output files... ---")
+    db_path = "./geoip.mmdb"
+    if not os.path.exists(db_path):
+        try:
+            r = requests.get("https://git.io/GeoLite2-Country.mmdb", allow_redirects=True)
+            with open(db_path, 'wb') as f: r.raise_for_status(); f.write(r.content)
+            print("INFO: GeoIP database downloaded successfully.")
+        except Exception: db_path = None; print("ERROR: Could not download GeoIP database.")
+    
+    geoip_reader = None
+    if db_path:
+        try: geoip_reader = geoip2.database.Reader(db_path)
+        except Exception: pass
+    
+    final_configs = process_configs(live_unique_configs, geoip_reader)
+    
+    print("\n--- Performing Full Categorization ---")
+    by_protocol = {p: [] for p in ["vless", "vmess", "trojan", "ss", "reality"]}
+    by_network = {'tcp': [], 'ws': [], 'grpc': [], 'http': []}
+    by_security 
