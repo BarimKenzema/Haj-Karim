@@ -11,7 +11,7 @@ from dns import resolver
 print("--- BASE COLLECTOR & PRE-FILTERER v38-S1-FULL-RESTORED START ---")
 
 # --- CONFIGURATION ---
-CONFIG_CHUNK_SIZE = 4444444444444444
+CONFIG_CHUNK_SIZE = 44444
 MAX_PREFILTER_WORKERS = 100
 COLLECTOR_TOKEN = os.environ.get('COLLECTOR_TOKEN')
 
@@ -52,7 +52,8 @@ def fetch_from_github():
                             except Exception: pass
                         found_in_file = find_configs_raw(content)
                         if found_in_file: configs.update(found_in_file)
-                except Exception: continue
+                except Exception:
+                    continue
         except Exception as e:
             print(f"ERROR: Failed to fetch from GitHub with query '{query}': {e}")
             if 'rate limit' in str(e).lower():
@@ -63,7 +64,7 @@ def fetch_from_github():
     print(f"Found {len(configs)} new unique configs from GitHub.")
     return configs
 
-# --- RESTORED HELPER FUNCTIONS ---
+# --- HELPER FUNCTIONS ---
 def setup_directories():
     import shutil
     dirs = ['./splitted', './subscribe', './protocols', './networks', './countries', './security']
@@ -170,7 +171,6 @@ def write_chunked_subscription_files(base_filepath, configs):
 
 # --- MAIN EXECUTION ---
 def main():
-    # --- RESTORED: Setup all directories at the start ---
     setup_directories()
 
     all_raw_configs = set()
@@ -193,12 +193,10 @@ def main():
     if not live_unique_configs:
         print("INFO: No live configs found after filtering. Exiting."); return
         
-    # --- Output 1: Save the full list for Repo B (Preserved) ---
     with open('filtered-for-refiner.txt', 'w', encoding='utf-8') as f:
         for config in live_unique_configs: f.write(config + '\n')
     print(f"--- Saved {len(live_unique_configs)} pre-filtered configs to filtered-for-refiner.txt ---")
     
-    # --- Output 2: Your special REALITY+gRPC search (Preserved) ---
     print("\n--- Searching for REALITY+gRPC configs from the live set... ---")
     reality_grpc_configs = []
     for config in live_unique_configs:
@@ -222,7 +220,6 @@ def main():
     else:
         print("--- No live REALITY+gRPC configs were found. ---")
     
-    # --- Output 3: RESTORED - Full Categorization for Repo A's own files ---
     print("\n--- Starting full categorization for this repo's output files... ---")
     db_path = "./geoip.mmdb"
     if not os.path.exists(db_path):
@@ -242,4 +239,44 @@ def main():
     print("\n--- Performing Full Categorization ---")
     by_protocol = {p: [] for p in ["vless", "vmess", "trojan", "ss", "reality"]}
     by_network = {'tcp': [], 'ws': [], 'grpc': [], 'http': []}
-    by_security 
+    by_security = {'tls': [], 'non_tls': []}
+    by_country = {}
+
+    for config in final_configs:
+        try:
+            proto = config.split('://')[0]
+            if proto in by_protocol: by_protocol[proto].append(config)
+            if 'reality' in config.lower(): by_protocol['reality'].append(config)
+
+            parsed = urlparse(config)
+            params = parse_qs(parsed.query)
+            
+            net = params.get('type', ['tcp'])[0].lower()
+            if net in by_network: by_network[net].append(config)
+            
+            sec = params.get('security', ['none'])[0].lower()
+            if 'tls' in sec or 'reality' in sec: by_security['tls'].append(config)
+            else: by_security['non_tls'].append(config)
+
+            country_code = parsed.fragment.split('-')[0].lower()
+            if country_code:
+                if country_code not in by_country: by_country[country_code] = []
+                by_country[country_code].append(config)
+        except Exception: continue
+
+    print("\n--- Writing All Categorized Subscription Files ---")
+    for p, clist in by_protocol.items(): write_chunked_subscription_files(f'./protocols/{p}', clist)
+    for n, clist in by_network.items(): write_chunked_subscription_files(f'./networks/{n}', clist)
+    for s, clist in by_security.items(): write_chunked_subscription_files(f'./security/{s}', clist)
+    for c, clist in by_country.items(): write_chunked_subscription_files(f'./countries/{c}', clist)
+    write_chunked_subscription_files('./splitted/mixed', final_configs)
+    
+    print("\n--- COLLECTOR SCRIPT FINISHED SUCCESSFULLY ---")
+
+if __name__ == "__main__":
+    try:
+        main()
+    except Exception:
+        print(f"\n--- FATAL UNHANDLED ERROR ---")
+        traceback.print_exc()
+        exit(1)
