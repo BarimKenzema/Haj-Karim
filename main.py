@@ -1,5 +1,5 @@
 # FILE: main.py (for your GitHub scraper repo: v2ray-collector)
-# VERSION 39: Domain→IP Conversion + True Deduplication + Optimized Processing
+# VERSION 39.1: Domain→IP Conversion + True Deduplication + Port Parsing Fix
 
 import os, json, re, base64, time, traceback, socket, ipaddress
 import requests
@@ -8,7 +8,7 @@ import concurrent.futures
 import geoip2.database
 from dns import resolver
 
-print("--- GITHUB COLLECTOR v39 (Domain→IP + Optimized) START ---")
+print("--- GITHUB COLLECTOR v39.1 (Domain→IP + Optimized + Fixed) START ---")
 
 # --- CONFIGURATION ---
 CONFIG_CHUNK_SIZE = 44444
@@ -137,7 +137,13 @@ def get_config_fingerprint(config_str):
             protocol = parsed.scheme
             uuid = parsed.username or ''
             host = parsed.hostname or ''
-            port = parsed.port or ''
+            
+            # Handle port parsing errors
+            try:
+                port = parsed.port or ''
+            except (ValueError, AttributeError, TypeError):
+                port = ''
+            
             return f"{protocol}|{host}|{port}|{uuid}"
         
         elif config_str.startswith('ss://'):
@@ -150,7 +156,11 @@ def get_config_fingerprint(config_str):
         # For other protocols (hy2, hysteria, tuic, juicity)
         else:
             parsed = urlparse(config_str)
-            return f"{parsed.scheme}|{parsed.hostname}|{parsed.port}|{parsed.username}"
+            try:
+                port = parsed.port or ''
+            except (ValueError, AttributeError, TypeError):
+                port = ''
+            return f"{parsed.scheme}|{parsed.hostname}|{port}|{parsed.username}"
         
         return None
     except Exception:
@@ -206,8 +216,13 @@ def replace_domain_with_ip(config_str):
                 # Rebuild
                 new_query = urlencode(params, doseq=True)
                 new_netloc = ip_addr
-                if parsed.port:
-                    new_netloc = f"{ip_addr}:{parsed.port}"
+                
+                try:
+                    if parsed.port:
+                        new_netloc = f"{ip_addr}:{parsed.port}"
+                except (ValueError, AttributeError, TypeError):
+                    pass
+                
                 if parsed.username:
                     new_netloc = f"{parsed.username}@{new_netloc}"
                 
@@ -253,8 +268,13 @@ def replace_domain_with_ip(config_str):
             
             if ip_addr and ip_addr != domain:
                 new_netloc = ip_addr
-                if parsed.port:
-                    new_netloc = f"{ip_addr}:{parsed.port}"
+                
+                try:
+                    if parsed.port:
+                        new_netloc = f"{ip_addr}:{parsed.port}"
+                except (ValueError, AttributeError, TypeError):
+                    pass
+                
                 if parsed.username:
                     new_netloc = f"{parsed.username}@{new_netloc}"
                 
@@ -466,7 +486,7 @@ def fetch_from_github():
     print(f"Collected {len(configs)} configs from GitHub.")
     return configs
 
-# --- IMPROVED PRE-FILTERING ---
+# --- FIXED: PRE-FILTERING WITH PORT ERROR HANDLING ---
 
 def pre_filter_live_hosts(all_configs):
     """Pre-filters configs by testing unique host:port pairs."""
@@ -484,31 +504,59 @@ def pre_filter_live_hosts(all_configs):
     
     # Build host:port to fingerprint mapping
     host_port_to_fingerprint = {}
+    parse_errors = 0
     
     for fp, config in fingerprint_to_config.items():
-        # Get hostname (works for all protocols now)
-        if config.startswith('vmess://'):
-            vmess_data = parse_vmess_config(config)
-            if not vmess_data:
+        try:
+            # Get hostname and port (works for all protocols now)
+            if config.startswith('vmess://'):
+                vmess_data = parse_vmess_config(config)
+                if not vmess_data:
+                    continue
+                host = vmess_data.get('add')
+                port = vmess_data.get('port')
+            else:
+                parsed = urlparse(config)
+                host = parsed.hostname
+                
+                # Handle port parsing errors (malformed IPv6, etc.)
+                try:
+                    port = parsed.port
+                except (ValueError, AttributeError, TypeError):
+                    parse_errors += 1
+                    continue
+            
+            if not host or not port:
                 continue
-            host = vmess_data.get('add')
-            port = vmess_data.get('port')
-        else:
-            parsed = urlparse(config)
-            host = parsed.hostname
-            port = parsed.port
-        
-        if not host or not port:
+            
+            # Ensure port is integer
+            try:
+                port = int(port)
+            except (ValueError, TypeError):
+                parse_errors += 1
+                continue
+            
+            # Validate port range
+            if port < 1 or port > 65535:
+                parse_errors += 1
+                continue
+            
+            # Resolve to IP
+            ip_addr = resolve_domain_to_ip(host)
+            if not ip_addr:
+                continue
+            
+            host_port_key = f"{ip_addr}:{port}"
+            if host_port_key not in host_port_to_fingerprint:
+                host_port_to_fingerprint[host_port_key] = fp
+                
+        except Exception:
+            # Skip any config that fails parsing
+            parse_errors += 1
             continue
-        
-        # Resolve to IP
-        ip_addr = resolve_domain_to_ip(host)
-        if not ip_addr:
-            continue
-        
-        host_port_key = f"{ip_addr}:{port}"
-        if host_port_key not in host_port_to_fingerprint:
-            host_port_to_fingerprint[host_port_key] = fp
+    
+    if parse_errors > 0:
+        print(f"Skipped {parse_errors} configs with parsing errors")
     
     print(f"Testing {len(host_port_to_fingerprint)} unique host:port pairs...")
     
