@@ -1,5 +1,5 @@
 # FILE: main.py (for your GitHub scraper repo: v2ray-collector)
-# VERSION 39.1: Domain→IP Conversion + True Deduplication + Port Parsing Fix
+# VERSION 39.2: SNI→Address for filtered-for-refiner.txt, IP for others
 
 import os, json, re, base64, time, traceback, socket, ipaddress
 import requests
@@ -8,7 +8,7 @@ import concurrent.futures
 import geoip2.database
 from dns import resolver
 
-print("--- GITHUB COLLECTOR v39.1 (Domain→IP + Optimized + Fixed) START ---")
+print("--- GITHUB COLLECTOR v39.2 (SNI→Address for refiner) START ---")
 
 # --- CONFIGURATION ---
 CONFIG_CHUNK_SIZE = 44444
@@ -56,7 +56,7 @@ COUNTRY_FLAGS = {
     "ZM": "🇿🇲", "ZW": "🇿🇼", "XX": "🔓"
 }
 
-# --- HELPER FUNCTIONS FROM TELEGRAM SCRAPER ---
+# --- HELPER FUNCTIONS ---
 
 def country_code_to_flag(iso_code):
     return COUNTRY_FLAGS.get(iso_code, "🌐")
@@ -153,7 +153,7 @@ def get_config_fingerprint(config_str):
                 method_pass = parts[0].replace('ss://', '')
                 return f"ss|{server_part}|{method_pass}"
         
-        # For other protocols (hy2, hysteria, tuic, juicity)
+        # For other protocols
         else:
             parsed = urlparse(config_str)
             try:
@@ -165,6 +165,78 @@ def get_config_fingerprint(config_str):
         return None
     except Exception:
         return None
+
+# --- NEW: Replace Address with SNI (for filtered-for-refiner.txt) ---
+
+def replace_address_with_sni(config_str):
+    """
+    Replaces the address with SNI/host parameter.
+    Opposite of domain→IP conversion. For filtered-for-refiner.txt only.
+    """
+    try:
+        if config_str.startswith('vmess://'):
+            vmess_data = parse_vmess_config(config_str)
+            if not vmess_data:
+                return config_str
+            
+            # Check if has SNI
+            sni = vmess_data.get('sni', '').strip()
+            host = vmess_data.get('host', '').strip()
+            current_addr = vmess_data.get('add', '')
+            
+            # Use SNI or host as new address
+            new_addr = sni or host
+            
+            if new_addr and new_addr != current_addr:
+                vmess_data['add'] = new_addr
+                # Keep SNI/host parameters intact
+                
+                # Re-encode
+                new_json = json.dumps(vmess_data, separators=(',', ':'))
+                new_encoded = base64.b64encode(new_json.encode('utf-8')).decode('utf-8')
+                return f"vmess://{new_encoded}"
+            
+            return config_str
+        
+        elif config_str.startswith(('vless://', 'trojan://')):
+            parsed = urlparse(config_str)
+            params = parse_qs(parsed.query)
+            
+            # Get SNI or host
+            sni = params.get('sni', [''])[0].strip()
+            host = params.get('host', [''])[0].strip()
+            current_addr = parsed.hostname
+            
+            # Use SNI or host as new address
+            new_addr = sni or host
+            
+            if new_addr and new_addr != current_addr:
+                # Rebuild netloc with SNI/host as address
+                new_netloc = new_addr
+                
+                try:
+                    if parsed.port:
+                        new_netloc = f"{new_addr}:{parsed.port}"
+                except (ValueError, AttributeError, TypeError):
+                    pass
+                
+                if parsed.username:
+                    new_netloc = f"{parsed.username}@{new_netloc}"
+                
+                # Keep query intact (SNI/host params stay)
+                new_parsed = parsed._replace(netloc=new_netloc)
+                return new_parsed.geturl()
+            
+            return config_str
+        
+        # For other protocols, return as-is
+        else:
+            return config_str
+        
+    except Exception:
+        return config_str
+
+# --- Domain→IP Conversion (for categorized outputs) ---
 
 def replace_domain_with_ip(config_str):
     """Replaces domain with IP while preserving SNI/host."""
@@ -256,7 +328,7 @@ def replace_domain_with_ip(config_str):
             
             return config_str
         
-        # For other protocols, basic handling
+        # For other protocols
         else:
             parsed = urlparse(config_str)
             domain = parsed.hostname
@@ -373,7 +445,7 @@ def rename_config(config_str, country_code):
     except Exception:
         return config_str
 
-# --- ORIGINAL HELPER FUNCTIONS (IMPROVED) ---
+# --- ORIGINAL HELPER FUNCTIONS ---
 
 def setup_directories():
     import shutil
@@ -425,7 +497,7 @@ def write_chunked_subscription_files(base_filepath, configs):
         with open(filepath, "w", encoding="utf-8") as f:
             f.write(content)
 
-# --- GITHUB FETCHING (PRESERVED) ---
+# --- GITHUB FETCHING ---
 
 def fetch_from_github():
     print("\n--- Fetching configs from GitHub ---")
@@ -449,7 +521,7 @@ def fetch_from_github():
     for query in queries:
         search_url = f"https://api.github.com/search/code?q={query}&sort=indexed&order=desc&per_page=100"
         try:
-            time.sleep(6)  # Rate limit protection
+            time.sleep(6)
             res = requests.get(search_url, headers=headers, timeout=30)
             res.raise_for_status()
             items = res.json().get('items', [])
@@ -486,13 +558,13 @@ def fetch_from_github():
     print(f"Collected {len(configs)} configs from GitHub.")
     return configs
 
-# --- FIXED: PRE-FILTERING WITH PORT ERROR HANDLING ---
+# --- PRE-FILTERING ---
 
 def pre_filter_live_hosts(all_configs):
     """Pre-filters configs by testing unique host:port pairs."""
     print(f"\n--- Pre-filtering {len(all_configs)} configs for live hosts ---")
     
-    # Map fingerprint to config (for deduplication)
+    # Deduplication
     fingerprint_to_config = {}
     
     for config in all_configs:
@@ -502,13 +574,13 @@ def pre_filter_live_hosts(all_configs):
     
     print(f"After deduplication: {len(fingerprint_to_config)} unique configs")
     
-    # Build host:port to fingerprint mapping
+    # Build host:port mapping
     host_port_to_fingerprint = {}
     parse_errors = 0
     
     for fp, config in fingerprint_to_config.items():
         try:
-            # Get hostname and port (works for all protocols now)
+            # Get hostname and port
             if config.startswith('vmess://'):
                 vmess_data = parse_vmess_config(config)
                 if not vmess_data:
@@ -519,7 +591,6 @@ def pre_filter_live_hosts(all_configs):
                 parsed = urlparse(config)
                 host = parsed.hostname
                 
-                # Handle port parsing errors (malformed IPv6, etc.)
                 try:
                     port = parsed.port
                 except (ValueError, AttributeError, TypeError):
@@ -529,14 +600,13 @@ def pre_filter_live_hosts(all_configs):
             if not host or not port:
                 continue
             
-            # Ensure port is integer
+            # Validate port
             try:
                 port = int(port)
             except (ValueError, TypeError):
                 parse_errors += 1
                 continue
             
-            # Validate port range
             if port < 1 or port > 65535:
                 parse_errors += 1
                 continue
@@ -551,7 +621,6 @@ def pre_filter_live_hosts(all_configs):
                 host_port_to_fingerprint[host_port_key] = fp
                 
         except Exception:
-            # Skip any config that fails parsing
             parse_errors += 1
             continue
     
@@ -594,17 +663,16 @@ def pre_filter_live_hosts(all_configs):
     print(f"Pre-filter complete: {len(live_configs)} live configs")
     return live_configs
 
-# --- IMPROVED CONFIG PROCESSING ---
+# --- CONFIG PROCESSING ---
 
 def process_and_convert_configs(configs):
     """Processes configs: Domain→IP + GeoIP + Renaming."""
-    print(f"\n--- Processing {len(configs)} configs ---")
+    print(f"\n--- Processing {len(configs)} configs for categorized outputs ---")
     
     processed = []
     stats = {
         'converted': 0,
-        'failed_attrs': 0,
-        'failed_dns': 0
+        'failed_attrs': 0
     }
     
     for config in configs:
@@ -638,7 +706,7 @@ def main():
     
     setup_directories()
     
-    # Download GeoIP database
+    # Download GeoIP
     db_path = "./geoip.mmdb"
     if not os.path.exists(db_path):
         print("Downloading GeoIP database...")
@@ -706,11 +774,24 @@ def main():
         print("No live configs found. Exiting.")
         return
     
-    # Save pre-filtered configs
+    # --- NEW: Convert to SNI-as-address for filtered-for-refiner.txt ---
+    print("\n--- Converting configs to SNI-as-address for refiner ---")
+    sni_configs = []
+    conversion_count = 0
+    
+    for config in live_configs:
+        sni_config = replace_address_with_sni(config)
+        if sni_config != config:
+            conversion_count += 1
+        sni_configs.append(sni_config)
+    
+    print(f"Converted {conversion_count} configs to use SNI/host as address")
+    
+    # Save SNI-based configs to filtered-for-refiner.txt
     with open('filtered-for-refiner.txt', 'w', encoding='utf-8') as f:
-        for config in live_configs:
+        for config in sni_configs:
             f.write(config + '\n')
-    print(f"Saved {len(live_configs)} pre-filtered configs")
+    print(f"✓ Saved {len(sni_configs)} SNI-based configs to filtered-for-refiner.txt")
     
     # Find REALITY+gRPC configs
     print("\n--- Searching for REALITY+gRPC configs ---")
@@ -729,7 +810,7 @@ def main():
     else:
         print("No REALITY+gRPC configs found")
     
-    # Process and convert to IP
+    # Process with IP conversion for categorized outputs
     processed_configs = process_and_convert_configs(live_configs)
     
     # Categorize
@@ -791,15 +872,16 @@ def main():
     print(f"\n{'='*60}")
     print(f"  FINAL SUMMARY")
     print(f"{'='*60}")
-    print(f"  Raw configs collected    : {len(all_raw_configs)}")
-    print(f"  Live configs (filtered)  : {len(live_configs)}")
-    print(f"  Processed configs        : {len(processed_configs)}")
-    print(f"  REALITY+gRPC configs     : {len(reality_grpc_configs)}")
-    print(f"  DNS cache entries        : {len(dns_cache)}")
-    print(f"  Protocols                : {len(by_protocol)}")
-    print(f"  Networks                 : {len(by_network)}")
-    print(f"  Security types           : {len(by_security)}")
-    print(f"  Countries                : {len(by_country)}")
+    print(f"  Raw configs collected           : {len(all_raw_configs)}")
+    print(f"  Live configs (filtered)         : {len(live_configs)}")
+    print(f"  SNI-based (for refiner)         : {len(sni_configs)}")
+    print(f"  IP-based (categorized)          : {len(processed_configs)}")
+    print(f"  REALITY+gRPC configs            : {len(reality_grpc_configs)}")
+    print(f"  DNS cache entries               : {len(dns_cache)}")
+    print(f"  Protocols                       : {len(by_protocol)}")
+    print(f"  Networks                        : {len(by_network)}")
+    print(f"  Security types                  : {len(by_security)}")
+    print(f"  Countries                       : {len(by_country)}")
     print(f"{'='*60}")
     print("\n--- COLLECTOR FINISHED SUCCESSFULLY ---")
 
