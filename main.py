@@ -1,5 +1,5 @@
 # FILE: main.py (for your GitHub scraper repo: v2ray-collector)
-# VERSION 39.3: SNI→Address for refiner + Custom naming format
+# VERSION 39.4: SNI→Address for refiner + Custom naming for ALL files
 
 import os, json, re, base64, time, traceback, socket, ipaddress
 import requests
@@ -8,7 +8,7 @@ import concurrent.futures
 import geoip2.database
 from dns import resolver
 
-print("--- GITHUB COLLECTOR v39.3 (Custom Naming) START ---")
+print("--- GITHUB COLLECTOR v39.4 (Complete Renaming) START ---")
 
 # --- CONFIGURATION ---
 CONFIG_CHUNK_SIZE = 44444
@@ -426,8 +426,6 @@ def get_config_attributes(config_str):
     except Exception:
         return None
 
-# --- UPDATED: Custom Rename Function ---
-
 def rename_config(config_str, country_code):
     """Renames config to format: 🇹🇷 @MoboNetPC 🇹🇷"""
     try:
@@ -766,24 +764,37 @@ def main():
         print("No live configs found. Exiting.")
         return
     
-    # Convert to SNI-as-address for filtered-for-refiner.txt
+    # --- UPDATED: Convert to SNI-as-address AND rename for filtered-for-refiner.txt ---
     print("\n--- Converting configs to SNI-as-address for refiner ---")
     sni_configs = []
     conversion_count = 0
+    rename_count = 0
     
     for config in live_configs:
+        # Apply SNI→Address conversion
         sni_config = replace_address_with_sni(config)
         if sni_config != config:
             conversion_count += 1
-        sni_configs.append(sni_config)
+        
+        # Get attributes for renaming
+        attrs = get_config_attributes(sni_config)
+        if attrs:
+            # Rename with custom format: 🇹🇷 @MoboNetPC 🇹🇷
+            renamed_config = rename_config(sni_config, attrs['country'])
+            sni_configs.append(renamed_config)
+            rename_count += 1
+        else:
+            # If attributes fail, keep original
+            sni_configs.append(sni_config)
     
     print(f"Converted {conversion_count} configs to use SNI/host as address")
+    print(f"Renamed {rename_count} configs with custom format")
     
-    # Save SNI-based configs to filtered-for-refiner.txt
+    # Save SNI-based + renamed configs to filtered-for-refiner.txt
     with open('filtered-for-refiner.txt', 'w', encoding='utf-8') as f:
         for config in sni_configs:
             f.write(config + '\n')
-    print(f"✓ Saved {len(sni_configs)} SNI-based configs to filtered-for-refiner.txt")
+    print(f"✓ Saved {len(sni_configs)} SNI-based + renamed configs to filtered-for-refiner.txt")
     
     # Find REALITY+gRPC configs
     print("\n--- Searching for REALITY+gRPC configs ---")
@@ -875,7 +886,7 @@ def main():
     print(f"  Security types                  : {len(by_security)}")
     print(f"  Countries                       : {len(by_country)}")
     print(f"{'='*60}")
-    print(f"\n✓ All configs renamed to: 🇹🇷 @MoboNetPC 🇹🇷 format")
+    print(f"\n✓ All configs renamed to: 🇹🇷 @MoboNetPC 🇹🇷 format (per country)")
     print("--- COLLECTOR FINISHED SUCCESSFULLY ---")
 
 if __name__ == "__main__":
