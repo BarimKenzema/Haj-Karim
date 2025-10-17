@@ -1,5 +1,5 @@
 # FILE: main.py (for your GitHub scraper repo: v2ray-collector)
-# VERSION 39.2: SNI→Address for filtered-for-refiner.txt, IP for others
+# VERSION 39.3: SNI→Address for refiner + Custom naming format
 
 import os, json, re, base64, time, traceback, socket, ipaddress
 import requests
@@ -8,7 +8,7 @@ import concurrent.futures
 import geoip2.database
 from dns import resolver
 
-print("--- GITHUB COLLECTOR v39.2 (SNI→Address for refiner) START ---")
+print("--- GITHUB COLLECTOR v39.3 (Custom Naming) START ---")
 
 # --- CONFIGURATION ---
 CONFIG_CHUNK_SIZE = 44444
@@ -166,7 +166,7 @@ def get_config_fingerprint(config_str):
     except Exception:
         return None
 
-# --- NEW: Replace Address with SNI (for filtered-for-refiner.txt) ---
+# --- Replace Address with SNI (for filtered-for-refiner.txt) ---
 
 def replace_address_with_sni(config_str):
     """
@@ -426,21 +426,13 @@ def get_config_attributes(config_str):
     except Exception:
         return None
 
+# --- UPDATED: Custom Rename Function ---
+
 def rename_config(config_str, country_code):
-    """Adds country flag to config name."""
+    """Renames config to format: 🇹🇷 @MoboNetPC 🇹🇷"""
     try:
         flag = country_code_to_flag(country_code)
-        
-        # Extract existing name if present
-        if '#' in config_str:
-            base, existing_name = config_str.rsplit('#', 1)
-            # Avoid adding flag if already present
-            if flag in existing_name:
-                return config_str
-            new_name = f"{flag} {existing_name}"
-        else:
-            new_name = f"{flag} {country_code}"
-        
+        new_name = f"{flag} @MoboNetPC {flag}"
         return f"{config_str.split('#')[0]}#{quote(new_name)}"
     except Exception:
         return config_str
@@ -687,7 +679,7 @@ def process_and_convert_configs(configs):
             stats['failed_attrs'] += 1
             continue
         
-        # Rename with country flag
+        # Rename with custom format: 🇹🇷 @MoboNetPC 🇹🇷
         final_config = rename_config(ip_config, attrs['country'])
         processed.append({
             'config': final_config,
@@ -774,7 +766,7 @@ def main():
         print("No live configs found. Exiting.")
         return
     
-    # --- NEW: Convert to SNI-as-address for filtered-for-refiner.txt ---
+    # Convert to SNI-as-address for filtered-for-refiner.txt
     print("\n--- Converting configs to SNI-as-address for refiner ---")
     sni_configs = []
     conversion_count = 0
@@ -883,7 +875,8 @@ def main():
     print(f"  Security types                  : {len(by_security)}")
     print(f"  Countries                       : {len(by_country)}")
     print(f"{'='*60}")
-    print("\n--- COLLECTOR FINISHED SUCCESSFULLY ---")
+    print(f"\n✓ All configs renamed to: 🇹🇷 @MoboNetPC 🇹🇷 format")
+    print("--- COLLECTOR FINISHED SUCCESSFULLY ---")
 
 if __name__ == "__main__":
     try:
