@@ -20,7 +20,6 @@ vless://df0680ca-e43c-498d-ed86-8e196eedd012@103.35.189.146:8880?security=&encry
 vless://401374e6-df77-41fb-f638-dad8184f175b@185.236.232.98:80?mode=gun&security=&encryption=none&type=grpc#%F0%9F%87%BA%F0%9F%87%B8%20%40VPNProxyTest%20%F0%9F%87%BA%F0%9F%87%B8
 vless://401374e6-df77-41fb-f638-dad8184f175b@185.236.232.101:80?security=&encryption=none&type=grpc#%F0%9F%87%BA%F0%9F%87%B8%20%40MoboNetPC%20%F0%9F%87%BA%F0%9F%87%B8
 vless://f744c2dc-1359-494c-9808-d81ce7665d58@real-madrid9248.pages.dev:443?path=%2F&security=tls&encryption=none&host=reAl-madrID9248.pagEs.dEv&fp=chrome&type=ws&sni=reAl-madrID9248.pagEs.dEv#%F0%9F%94%93%20%40MoboNetPC%20%F0%9F%94%93
-vless://401374e6-df77-41fb-f638-dad8184f175b@185.236.232.100:80?mode=gun&security=&encryption=none&type=grpc#%F0%9F%87%BA%F0%9F%87%B8%20%40VPNProxyTest%20%F0%9F%87%BA%F0%9F%87%B8
 vless://df0680ca-e43c-498d-ed86-8e196eedd012@185.234.66.97:8880?security=&encryption=none&type=grpc#%F0%9F%87%B9%F0%9F%87%B7%20%40MoboNetPC%20%F0%9F%87%B9%F0%9F%87%B7
 ss://Y2hhY2hhMjAtaWV0Zi1wb2x5MTMwNTpBUmd2R1p5d0ErZ2FjZ0dWMjZCdm11MDUrd1ptUlcvaitBZFUrWjhCdDQ0PQ%3D%3D@119.59.127.129:990#%F0%9F%87%B9%F0%9F%87%AD%20%40MoboNetPC%20%F0%9F%87%B9%F0%9F%87%AD
 ss://Y2hhY2hhMjAtaWV0Zi1wb2x5MTMwNTpBUmd2R1p5d0ErZ2FjZ0dWMjZCdm11MDUrd1ptUlcvaitBZFUrWjhCdDQ0PQ%3D%3D@45.82.252.109:990#%F0%9F%87%AD%F0%9F%87%B0%20%40MoboNetPC%20%F0%9F%87%AD%F0%9F%87%B0
