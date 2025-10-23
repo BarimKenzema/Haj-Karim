@@ -1,5 +1,5 @@
 # FILE: main.py (for your GitHub scraper repo: v2ray-collector)
-# VERSION 39.4: SNI→Address for refiner + Custom naming for ALL files
+# VERSION 40.0: Massively Expanded Search - All 3 Phases
 
 import os, json, re, base64, time, traceback, socket, ipaddress
 import requests
@@ -8,12 +8,13 @@ import concurrent.futures
 import geoip2.database
 from dns import resolver
 
-print("--- GITHUB COLLECTOR v39.4 (Complete Renaming) START ---")
+print("--- GITHUB COLLECTOR v40.0 (MASSIVELY EXPANDED SEARCH) START ---")
 
 # --- CONFIGURATION ---
 CONFIG_CHUNK_SIZE = 44444
 MAX_PREFILTER_WORKERS = 100
 COLLECTOR_TOKEN = os.environ.get('COLLECTOR_TOKEN')
+SUCCESS_CACHE_FILE = 'successful_sources.json'
 
 # --- SHARED CACHING & GLOBALS ---
 dns_cache = {}
@@ -56,28 +57,21 @@ COUNTRY_FLAGS = {
     "ZM": "🇿🇲", "ZW": "🇿🇼", "XX": "🔓"
 }
 
-# --- HELPER FUNCTIONS ---
+# --- HELPER FUNCTIONS (Same as before) ---
 
 def country_code_to_flag(iso_code):
     return COUNTRY_FLAGS.get(iso_code, "🌐")
 
 def resolve_domain_to_ip(hostname):
-    """Resolves domain to IP with caching. Returns IP or None."""
     if not hostname:
         return None
-    
-    # Check if already an IP
     try:
         ipaddress.ip_address(hostname)
         return hostname
     except ValueError:
         pass
-    
-    # Check cache
     if hostname in dns_cache:
         return dns_cache[hostname]
-    
-    # Resolve
     try:
         res = resolver.Resolver()
         res.nameservers = ["8.8.8.8", "1.1.1.1"]
@@ -89,39 +83,25 @@ def resolve_domain_to_ip(hostname):
         return None
 
 def parse_vmess_config(config_str):
-    """Parses VMess config with multi-encoding support. Returns dict or None."""
     try:
-        encoded = config_str.replace('vmess://', '').strip()
-        encoded = encoded.rstrip('.,;!?')
-        
-        # Add padding
+        encoded = config_str.replace('vmess://', '').strip().rstrip('.,;!?')
         missing_padding = len(encoded) % 4
         if missing_padding:
             encoded += '=' * (4 - missing_padding)
-        
-        # Decode base64
         decoded_bytes = base64.b64decode(encoded, validate=True)
-        
-        # Try multiple encodings
         for encoding in ['utf-8', 'latin-1', 'iso-8859-1', 'cp1252']:
             try:
                 decoded = decoded_bytes.decode(encoding, errors='ignore')
                 parsed = json.loads(decoded)
-                
-                # Validate required fields
                 if 'add' in parsed and 'port' in parsed and 'id' in parsed:
                     return parsed
-                    
             except (UnicodeDecodeError, json.JSONDecodeError):
                 continue
-        
         return None
-        
     except Exception:
         return None
 
 def get_config_fingerprint(config_str):
-    """Creates unique fingerprint for deduplication."""
     try:
         if config_str.startswith('vmess://'):
             vmess_data = parse_vmess_config(config_str)
@@ -131,29 +111,22 @@ def get_config_fingerprint(config_str):
             port = vmess_data.get('port', '')
             uuid = vmess_data.get('id', '')
             return f"vmess|{addr}|{port}|{uuid}"
-        
         elif config_str.startswith(('vless://', 'trojan://')):
             parsed = urlparse(config_str)
             protocol = parsed.scheme
             uuid = parsed.username or ''
             host = parsed.hostname or ''
-            
-            # Handle port parsing errors
             try:
                 port = parsed.port or ''
             except (ValueError, AttributeError, TypeError):
                 port = ''
-            
             return f"{protocol}|{host}|{port}|{uuid}"
-        
         elif config_str.startswith('ss://'):
             parts = config_str.split('@')
             if len(parts) == 2:
                 server_part = parts[1].split('#')[0]
                 method_pass = parts[0].replace('ss://', '')
                 return f"ss|{server_part}|{method_pass}"
-        
-        # For other protocols
         else:
             parsed = urlparse(config_str)
             try:
@@ -161,231 +134,152 @@ def get_config_fingerprint(config_str):
             except (ValueError, AttributeError, TypeError):
                 port = ''
             return f"{parsed.scheme}|{parsed.hostname}|{port}|{parsed.username}"
-        
         return None
     except Exception:
         return None
 
-# --- Replace Address with SNI (for filtered-for-refiner.txt) ---
-
 def replace_address_with_sni(config_str):
-    """
-    Replaces the address with SNI/host parameter.
-    Opposite of domain→IP conversion. For filtered-for-refiner.txt only.
-    """
     try:
         if config_str.startswith('vmess://'):
             vmess_data = parse_vmess_config(config_str)
             if not vmess_data:
                 return config_str
-            
-            # Check if has SNI
             sni = vmess_data.get('sni', '').strip()
             host = vmess_data.get('host', '').strip()
             current_addr = vmess_data.get('add', '')
-            
-            # Use SNI or host as new address
             new_addr = sni or host
-            
             if new_addr and new_addr != current_addr:
                 vmess_data['add'] = new_addr
-                # Keep SNI/host parameters intact
-                
-                # Re-encode
                 new_json = json.dumps(vmess_data, separators=(',', ':'))
                 new_encoded = base64.b64encode(new_json.encode('utf-8')).decode('utf-8')
                 return f"vmess://{new_encoded}"
-            
             return config_str
-        
         elif config_str.startswith(('vless://', 'trojan://')):
             parsed = urlparse(config_str)
             params = parse_qs(parsed.query)
-            
-            # Get SNI or host
             sni = params.get('sni', [''])[0].strip()
             host = params.get('host', [''])[0].strip()
             current_addr = parsed.hostname
-            
-            # Use SNI or host as new address
             new_addr = sni or host
-            
             if new_addr and new_addr != current_addr:
-                # Rebuild netloc with SNI/host as address
                 new_netloc = new_addr
-                
                 try:
                     if parsed.port:
                         new_netloc = f"{new_addr}:{parsed.port}"
                 except (ValueError, AttributeError, TypeError):
                     pass
-                
                 if parsed.username:
                     new_netloc = f"{parsed.username}@{new_netloc}"
-                
-                # Keep query intact (SNI/host params stay)
                 new_parsed = parsed._replace(netloc=new_netloc)
                 return new_parsed.geturl()
-            
             return config_str
-        
-        # For other protocols, return as-is
         else:
             return config_str
-        
     except Exception:
         return config_str
 
-# --- Domain→IP Conversion (for categorized outputs) ---
-
 def replace_domain_with_ip(config_str):
-    """Replaces domain with IP while preserving SNI/host."""
     try:
         if config_str.startswith('vmess://'):
             vmess_data = parse_vmess_config(config_str)
             if not vmess_data:
                 return config_str
-            
             domain = vmess_data.get('add', '')
             ip_addr = resolve_domain_to_ip(domain)
-            
             if ip_addr and ip_addr != domain:
-                # Preserve SNI
                 if vmess_data.get('tls') == 'tls' and not vmess_data.get('sni'):
                     vmess_data['sni'] = domain
-                
                 vmess_data['add'] = ip_addr
-                
-                # Re-encode
                 new_json = json.dumps(vmess_data, separators=(',', ':'))
                 new_encoded = base64.b64encode(new_json.encode('utf-8')).decode('utf-8')
                 return f"vmess://{new_encoded}"
-            
             return config_str
-        
         elif config_str.startswith(('vless://', 'trojan://')):
             parsed = urlparse(config_str)
             domain = parsed.hostname
-            
             if not domain:
                 return config_str
-            
             ip_addr = resolve_domain_to_ip(domain)
-            
             if ip_addr and ip_addr != domain:
                 params = parse_qs(parsed.query)
-                
-                # Preserve SNI
                 security = params.get('security', [''])[0]
                 if security in ['tls', 'reality'] and 'sni' not in params:
                     params['sni'] = [domain]
-                
-                # Preserve host
                 network_type = params.get('type', [''])[0]
                 if network_type in ['http', 'ws'] and 'host' not in params:
                     params['host'] = [domain]
-                
-                # Rebuild
                 new_query = urlencode(params, doseq=True)
                 new_netloc = ip_addr
-                
                 try:
                     if parsed.port:
                         new_netloc = f"{ip_addr}:{parsed.port}"
                 except (ValueError, AttributeError, TypeError):
                     pass
-                
                 if parsed.username:
                     new_netloc = f"{parsed.username}@{new_netloc}"
-                
                 new_parsed = parsed._replace(netloc=new_netloc, query=new_query)
                 return new_parsed.geturl()
-            
             return config_str
-        
         elif config_str.startswith('ss://'):
             parts = config_str.split('@')
             if len(parts) != 2:
                 return config_str
-            
             prefix = parts[0]
             suffix = parts[1]
-            
             fragment = ''
             if '#' in suffix:
                 suffix, fragment = suffix.split('#', 1)
                 fragment = f'#{fragment}'
-            
             if ':' in suffix:
                 domain, port = suffix.rsplit(':', 1)
             else:
                 domain, port = suffix, '443'
-            
             ip_addr = resolve_domain_to_ip(domain)
-            
             if ip_addr and ip_addr != domain:
                 return f"{prefix}@{ip_addr}:{port}{fragment}"
-            
             return config_str
-        
-        # For other protocols
         else:
             parsed = urlparse(config_str)
             domain = parsed.hostname
-            
             if not domain:
                 return config_str
-            
             ip_addr = resolve_domain_to_ip(domain)
-            
             if ip_addr and ip_addr != domain:
                 new_netloc = ip_addr
-                
                 try:
                     if parsed.port:
                         new_netloc = f"{ip_addr}:{parsed.port}"
                 except (ValueError, AttributeError, TypeError):
                     pass
-                
                 if parsed.username:
                     new_netloc = f"{parsed.username}@{new_netloc}"
-                
                 new_parsed = parsed._replace(netloc=new_netloc)
                 return new_parsed.geturl()
-            
             return config_str
-        
     except Exception:
         return config_str
 
 def get_country_from_hostname(hostname):
-    """Get country code from hostname/IP."""
     if not hostname:
         return "XX"
-    
     ip_addr = resolve_domain_to_ip(hostname)
-    
     if not ip_addr or not geoip_reader:
         return "XX"
-    
     try:
         return geoip_reader.country(ip_addr).country.iso_code or "XX"
     except Exception:
         return "XX"
 
 def get_config_attributes(config_str):
-    """Extracts and validates protocol, network, security, country."""
     try:
         if config_str.startswith('vmess://'):
             vmess_data = parse_vmess_config(config_str)
             if not vmess_data:
                 return None
-            
             protocol = 'vmess'
             network = vmess_data.get('net', 'tcp').lower().strip()
             security = vmess_data.get('tls', 'none').lower().strip()
             country = get_country_from_hostname(vmess_data.get('add', '')).upper()
-        
         else:
             parsed = urlparse(config_str)
             params = parse_qs(parsed.query)
@@ -393,49 +287,36 @@ def get_config_attributes(config_str):
             hostname = parsed.hostname
             network = params.get('type', ['tcp'])[0].lower().strip()
             security = params.get('security', ['none'])[0].lower().strip()
-            
-            # Reality detection
             if security != 'reality' and 'pbk' in params:
                 security = 'reality'
-            
             country = get_country_from_hostname(hostname).upper()
-        
-        # Validation
         valid_protocols = ['vmess', 'vless', 'trojan', 'ss', 'hy2', 'hysteria', 'tuic', 'juicity']
         if not protocol or protocol not in valid_protocols:
             return None
-        
         valid_networks = ['tcp', 'kcp', 'ws', 'http', 'quic', 'grpc', 'h2', 'httpupgrade', 'splithttp']
         if not network or network not in valid_networks:
             network = 'tcp'
-        
         valid_security = ['none', 'tls', 'reality', 'xtls']
         if not security or security not in valid_security:
             security = 'none'
-        
         if not country or len(country) != 2 or not country.isalpha():
             country = 'XX'
-        
         return {
             'protocol': protocol,
             'network': network,
             'security': security,
             'country': country
         }
-    
     except Exception:
         return None
 
 def rename_config(config_str, country_code):
-    """Renames config to format: 🇹🇷 @MoboNetPC 🇹🇷"""
     try:
         flag = country_code_to_flag(country_code)
         new_name = f"{flag} @MoboNetPC {flag}"
         return f"{config_str.split('#')[0]}#{quote(new_name)}"
     except Exception:
         return config_str
-
-# --- ORIGINAL HELPER FUNCTIONS ---
 
 def setup_directories():
     import shutil
@@ -460,7 +341,6 @@ def find_configs_raw(text):
     return re.findall(pattern, text, re.IGNORECASE)
 
 def check_host_port_with_socket(host_port):
-    """Tests if host:port is reachable."""
     try:
         host, port_str = host_port.rsplit(':', 1)
         port = int(port_str)
@@ -470,13 +350,11 @@ def check_host_port_with_socket(host_port):
         return None
 
 def write_chunked_subscription_files(base_filepath, configs):
-    """Writes configs to base64-encoded files."""
     os.makedirs(os.path.dirname(base_filepath), exist_ok=True)
     if not configs:
         with open(base_filepath, "w") as f:
             f.write("")
         return
-    
     chunks = [configs[i:i + CONFIG_CHUNK_SIZE] for i in range(0, len(configs), CONFIG_CHUNK_SIZE)]
     for i, chunk in enumerate(chunks):
         filepath = base_filepath if i == 0 else os.path.join(
@@ -487,26 +365,85 @@ def write_chunked_subscription_files(base_filepath, configs):
         with open(filepath, "w", encoding="utf-8") as f:
             f.write(content)
 
-# --- GITHUB FETCHING ---
+# --- PHASE 3: SUCCESS TRACKING ---
 
-def fetch_from_github():
-    print("\n--- Fetching configs from GitHub ---")
+def load_success_cache():
+    """Load successful sources cache."""
+    try:
+        with open(SUCCESS_CACHE_FILE, 'r') as f:
+            return json.load(f)
+    except:
+        return {}
+
+def save_success_cache(cache):
+    """Save successful sources cache."""
+    try:
+        with open(SUCCESS_CACHE_FILE, 'w') as f:
+            json.dump(cache, f, indent=2)
+    except:
+        pass
+
+def update_source_success(cache, source, config_count):
+    """Track which sources yield configs."""
+    if source not in cache:
+        cache[source] = {'total_configs': 0, 'last_success': None, 'attempts': 0}
+    cache[source]['total_configs'] += config_count
+    cache[source]['attempts'] += 1
+    if config_count > 0:
+        cache[source]['last_success'] = time.time()
+
+# --- PHASE 1: EXPANDED CODE SEARCH ---
+
+def fetch_from_github_code():
+    print("\n--- [PHASE 1] Fetching from GitHub Code Search (EXPANDED) ---")
     if not COLLECTOR_TOKEN:
-        print("WARNING: COLLECTOR_TOKEN not found. Skipping GitHub scrape.")
+        print("WARNING: COLLECTOR_TOKEN not found.")
         return set()
     
     configs = set()
-    headers = {
-        'Authorization': f'token {COLLECTOR_TOKEN}',
-        'Accept': 'application/vnd.github.v3.raw'
-    }
+    headers = {'Authorization': f'token {COLLECTOR_TOKEN}', 'Accept': 'application/vnd.github.v3.raw'}
     
+    # MASSIVELY EXPANDED QUERIES
     queries = [
+        # Persian
         '"vless" "کانفیگ" "رایگان"', '"vmess" "ایرانسل"', '"trojan" "همراه اول"',
         '"v2ray" "رایتل"', 'filename:subscribe "v2ray" "ایران"', 
         'path:config "vless" "رایگان"', '"ss://"', '"reality" "کانفیگ"', 
-        'filename:all.txt "vmess://"', 'path:nodes "vless://"'
+        'filename:all.txt "vmess://"', 'path:nodes "vless://"',
+        
+        # English
+        '"vmess://" "subscription"', '"vless://" "subscription"',
+        '"trojan://" "free"', '"reality" "proxy"',
+        'filename:subscription.txt "vless"', 'filename:sub.txt "vmess"',
+        'path:subscribe "vmess://"', 'path:subscription "vless://"',
+        '"v2ray" "free" "nodes"', '"proxy" "subscription" "auto"',
+        
+        # Chinese
+        '"vmess" "免费"', '"v2ray" "订阅"', '"节点" "分享"',
+        '"翻墙" "配置"', '"代理" "免费"', '"vless" "免费节点"',
+        
+        # Russian
+        '"vmess" "бесплатно"', '"v2ray" "подписка"', '"прокси" "бесплатно"',
+        
+        # Protocol-specific
+        '"hy2://" OR "hysteria2://"', '"tuic://"', '"juicity://"',
+        '"reality" "grpc"', '"vless" "xtls"', '"trojan" "reality"',
+        
+        # File patterns
+        'filename:config.txt "vmess"', 'filename:nodes.txt "vless"',
+        'filename:proxies.txt', 'path:sub extension:txt',
+        
+        # YAML configs
+        '"clash" "proxies" extension:yaml', '"xray" extension:json',
+        
+        # Aggregators
+        '"v2ray collector"', '"proxy collector"', '"subscription aggregator"',
+        
+        # Recent
+        '"vmess://" pushed:>2024-01-01', '"vless://" pushed:>2024-01-01',
     ]
+    
+    success_cache = load_success_cache()
     
     for query in queries:
         search_url = f"https://api.github.com/search/code?q={query}&sort=indexed&order=desc&per_page=100"
@@ -515,7 +452,7 @@ def fetch_from_github():
             res = requests.get(search_url, headers=headers, timeout=30)
             res.raise_for_status()
             items = res.json().get('items', [])
-            print(f"Found {len(items)} files for query: '{query[:30]}...'")
+            print(f"Found {len(items)} files for: '{query[:40]}...'")
             
             for item in items:
                 time.sleep(0.5)
@@ -524,53 +461,339 @@ def fetch_from_github():
                     content_res = requests.get(raw_url, headers=headers, timeout=10)
                     if content_res.status_code == 200:
                         content = content_res.text
-                        
-                        # Decode if base64
                         if re.match(r'^[A-Za-z0-9+/=]{100,}$', content.strip().replace('\n', '')):
                             try:
                                 content = base64.b64decode(content).decode('utf-8', 'ignore')
-                            except Exception:
+                            except:
                                 pass
-                        
                         found = find_configs_raw(content)
                         if found:
                             configs.update(found)
-                except Exception:
+                            update_source_success(success_cache, item.get('repository', {}).get('full_name', 'unknown'), len(found))
+                except:
                     continue
-                    
         except Exception as e:
-            print(f"ERROR: GitHub query failed: {e}")
+            print(f"ERROR: {e}")
             if 'rate limit' in str(e).lower():
                 print("Rate limit hit. Sleeping 60s...")
                 time.sleep(60)
             continue
-
-    print(f"Collected {len(configs)} configs from GitHub.")
+    
+    save_success_cache(success_cache)
+    print(f"Collected {len(configs)} configs from code search")
     return configs
 
-# --- PRE-FILTERING ---
+# --- PHASE 1: REPOSITORY SEARCH ---
+
+def fetch_from_github_repos():
+    print("\n--- [PHASE 1] Searching GitHub Repositories ---")
+    if not COLLECTOR_TOKEN:
+        return set()
+    
+    configs = set()
+    headers = {'Authorization': f'token {COLLECTOR_TOKEN}'}
+    
+    repo_queries = [
+        'v2ray subscription', 'proxy subscription', 'free proxy',
+        'vmess nodes', 'v2ray collector', 'clash subscription',
+        'v2ray 节点', 'free vpn configs', 'xray subscription',
+        'shadowsocks subscription', 'trojan subscription'
+    ]
+    
+    for query in repo_queries:
+        try:
+            time.sleep(6)
+            search_url = f"https://api.github.com/search/repositories?q={query}&sort=updated&per_page=30"
+            res = requests.get(search_url, headers=headers, timeout=30)
+            res.raise_for_status()
+            repos = res.json().get('items', [])
+            print(f"Found {len(repos)} repos for: {query}")
+            
+            for repo in repos:
+                common_paths = [
+                    'subscription.txt', 'sub.txt', 'nodes.txt', 'all.txt',
+                    'README.md', 'config.txt', 'proxies.txt', 'v2ray.txt',
+                    'clash.yaml', 'base64.txt', 'subscribe/all.txt', 'Sub.txt'
+                ]
+                
+                for path in common_paths:
+                    try:
+                        time.sleep(0.3)
+                        file_url = f"https://api.github.com/repos/{repo['full_name']}/contents/{path}"
+                        file_res = requests.get(file_url, headers=headers, timeout=10)
+                        
+                        if file_res.status_code == 200:
+                            content = file_res.json().get('content', '')
+                            try:
+                                decoded = base64.b64decode(content).decode('utf-8', 'ignore')
+                                found = find_configs_raw(decoded)
+                                if found:
+                                    configs.update(found)
+                                    print(f"  ✓ {repo['name']}/{path}: {len(found)} configs")
+                            except:
+                                pass
+                    except:
+                        continue
+        except Exception as e:
+            print(f"Repo search error: {e}")
+            continue
+    
+    print(f"Collected {len(configs)} configs from repository search")
+    return configs
+
+# --- PHASE 1: KNOWN PATTERNS ---
+
+def fetch_from_known_patterns():
+    print("\n--- [PHASE 1] Fetching from Known User Patterns ---")
+    
+    configs = set()
+    
+    known_users = [
+        'mahdibland', 'yebekhe', 'MrPooyaX', 'barry-far', 'coldwater-10',
+        'sashalsk', 'aiboboxx', 'Bardiafa', 'freefq', 'Pawdroid',
+        'mfuu', 'Leon406', 'tbbatbb', 'peasoft', 'AzadNetCH',
+        'soroushmirzaei', 'MhdiTaheri', 'itsyebekhe', 'Surfboardv2ray'
+    ]
+    
+    common_paths = [
+        'Sub.txt', 'subscription.txt', 'all.txt', 'v2ray.txt',
+        'clash.yaml', 'nodes.txt', 'base64.txt', 'config.txt'
+    ]
+    
+    branches = ['main', 'master']
+    
+    for user in known_users:
+        for branch in branches:
+            for path in common_paths:
+                try:
+                    url = f"https://raw.githubusercontent.com/{user}/v2ray/{branch}/{path}"
+                    content = requests.get(url, timeout=10).text
+                    found = find_configs_raw(content)
+                    if found:
+                        configs.update(found)
+                        print(f"  ✓ {user}/{branch}/{path}: {len(found)} configs")
+                    time.sleep(0.2)
+                except:
+                    pass
+    
+    print(f"Collected {len(configs)} configs from known patterns")
+    return configs
+
+# --- PHASE 2: README PARSING ---
+
+def fetch_subscription_links_from_readmes():
+    print("\n--- [PHASE 2] Extracting Subscription Links from READMEs ---")
+    if not COLLECTOR_TOKEN:
+        return set()
+    
+    new_subscription_links = set()
+    headers = {'Authorization': f'token {COLLECTOR_TOKEN}'}
+    
+    search_query = 'filename:README.md "subscription" "http"'
+    
+    try:
+        time.sleep(6)
+        search_url = f"https://api.github.com/search/code?q={search_query}&per_page=100"
+        res = requests.get(search_url, headers=headers, timeout=30)
+        res.raise_for_status()
+        items = res.json().get('items', [])
+        print(f"Found {len(items)} READMEs")
+        
+        url_pattern = r'https?://[^\s<>"\'`\)]+(?:sub|subscription|v2ray|clash|base64|config)[^\s<>"\'`\)]*'
+        
+        for item in items:
+            try:
+                time.sleep(0.5)
+                raw_url = item.get('url')
+                content_res = requests.get(raw_url, headers=headers, timeout=10)
+                if content_res.status_code == 200:
+                    content = content_res.text
+                    try:
+                        decoded = base64.b64decode(content).decode('utf-8', 'ignore')
+                        urls = re.findall(url_pattern, decoded)
+                        new_subscription_links.update(urls)
+                    except:
+                        urls = re.findall(url_pattern, content)
+                        new_subscription_links.update(urls)
+            except:
+                continue
+    except Exception as e:
+        print(f"README parsing error: {e}")
+    
+    print(f"Extracted {len(new_subscription_links)} potential subscription links")
+    return new_subscription_links
+
+# --- PHASE 2: FORK CHECKING ---
+
+def fetch_from_popular_forks():
+    print("\n--- [PHASE 2] Checking Forks of Popular Repos ---")
+    if not COLLECTOR_TOKEN:
+        return set()
+    
+    configs = set()
+    headers = {'Authorization': f'token {COLLECTOR_TOKEN}'}
+    
+    popular_repos = [
+        'mahdibland/ShadowsocksAggregator',
+        'yebekhe/TelegramV2rayCollector',
+        'barry-far/V2ray-Configs',
+        'peasoft/NoMoreWalls'
+    ]
+    
+    for repo in popular_repos:
+        try:
+            time.sleep(6)
+            forks_url = f"https://api.github.com/repos/{repo}/forks?sort=newest&per_page=20"
+            res = requests.get(forks_url, headers=headers, timeout=30)
+            res.raise_for_status()
+            forks = res.json()
+            print(f"Checking {len(forks)} forks of {repo}")
+            
+            for fork in forks:
+                common_paths = ['Sub.txt', 'all.txt', 'subscription.txt', 'config.txt']
+                for path in common_paths:
+                    try:
+                        time.sleep(0.3)
+                        file_url = f"https://api.github.com/repos/{fork['full_name']}/contents/{path}"
+                        file_res = requests.get(file_url, headers=headers, timeout=10)
+                        if file_res.status_code == 200:
+                            content = file_res.json().get('content', '')
+                            decoded = base64.b64decode(content).decode('utf-8', 'ignore')
+                            found = find_configs_raw(decoded)
+                            if found:
+                                configs.update(found)
+                                print(f"  ✓ Fork {fork['name']}/{path}: {len(found)} configs")
+                    except:
+                        continue
+        except Exception as e:
+            print(f"Fork checking error for {repo}: {e}")
+            continue
+    
+    print(f"Collected {len(configs)} configs from forks")
+    return configs
+
+# --- PHASE 2: TOPIC SEARCH ---
+
+def fetch_from_topics():
+    print("\n--- [PHASE 2] Searching by GitHub Topics ---")
+    if not COLLECTOR_TOKEN:
+        return set()
+    
+    configs = set()
+    headers = {'Authorization': f'token {COLLECTOR_TOKEN}'}
+    
+    topic_combos = [
+        'topic:v2ray topic:subscription',
+        'topic:xray topic:nodes',
+        'topic:proxy topic:free',
+        'topic:clash topic:subscription',
+        'topic:shadowsocks topic:free'
+    ]
+    
+    for topic_query in topic_combos:
+        try:
+            time.sleep(6)
+            search_url = f"https://api.github.com/search/repositories?q={topic_query}&sort=updated&per_page=20"
+            res = requests.get(search_url, headers=headers, timeout=30)
+            res.raise_for_status()
+            repos = res.json().get('items', [])
+            print(f"Found {len(repos)} repos for: {topic_query}")
+            
+            for repo in repos:
+                for path in ['Sub.txt', 'all.txt', 'subscription.txt']:
+                    try:
+                        time.sleep(0.3)
+                        file_url = f"https://api.github.com/repos/{repo['full_name']}/contents/{path}"
+                        file_res = requests.get(file_url, headers=headers, timeout=10)
+                        if file_res.status_code == 200:
+                            content = file_res.json().get('content', '')
+                            decoded = base64.b64decode(content).decode('utf-8', 'ignore')
+                            found = find_configs_raw(decoded)
+                            if found:
+                                configs.update(found)
+                    except:
+                        continue
+        except Exception as e:
+            print(f"Topic search error: {e}")
+            continue
+    
+    print(f"Collected {len(configs)} configs from topic search")
+    return configs
+
+# --- PHASE 3: GRAPHQL API ---
+
+def fetch_with_graphql():
+    print("\n--- [PHASE 3] Using GitHub GraphQL API ---")
+    if not COLLECTOR_TOKEN:
+        return set()
+    
+    configs = set()
+    headers = {'Authorization': f'bearer {COLLECTOR_TOKEN}'}
+    graphql_url = 'https://api.github.com/graphql'
+    
+    queries_gql = [
+        'vmess OR vless in:file',
+        'trojan OR reality in:file',
+        'subscription filename:sub.txt'
+    ]
+    
+    for search_term in queries_gql:
+        query = f'''
+        {{
+          search(query: "{search_term}", type: CODE, first: 100) {{
+            edges {{
+              node {{
+                ... on Blob {{
+                  text
+                }}
+              }}
+            }}
+          }}
+        }}
+        '''
+        
+        try:
+            time.sleep(6)
+            res = requests.post(graphql_url, headers=headers, json={'query': query}, timeout=30)
+            res.raise_for_status()
+            data = res.json()
+            
+            if 'data' in data and 'search' in data['data']:
+                edges = data['data']['search'].get('edges', [])
+                print(f"GraphQL found {len(edges)} results for: {search_term}")
+                
+                for edge in edges:
+                    try:
+                        text = edge.get('node', {}).get('text', '')
+                        if text:
+                            found = find_configs_raw(text)
+                            if found:
+                                configs.update(found)
+                    except:
+                        continue
+        except Exception as e:
+            print(f"GraphQL error: {e}")
+            continue
+    
+    print(f"Collected {len(configs)} configs from GraphQL")
+    return configs
+
+# --- PRE-FILTERING (Same as before) ---
 
 def pre_filter_live_hosts(all_configs):
-    """Pre-filters configs by testing unique host:port pairs."""
     print(f"\n--- Pre-filtering {len(all_configs)} configs for live hosts ---")
-    
-    # Deduplication
     fingerprint_to_config = {}
-    
     for config in all_configs:
         fp = get_config_fingerprint(config)
         if fp and fp not in fingerprint_to_config:
             fingerprint_to_config[fp] = config
-    
     print(f"After deduplication: {len(fingerprint_to_config)} unique configs")
     
-    # Build host:port mapping
     host_port_to_fingerprint = {}
     parse_errors = 0
     
     for fp, config in fingerprint_to_config.items():
         try:
-            # Get hostname and port
             if config.startswith('vmess://'):
                 vmess_data = parse_vmess_config(config)
                 if not vmess_data:
@@ -580,7 +803,6 @@ def pre_filter_live_hosts(all_configs):
             else:
                 parsed = urlparse(config)
                 host = parsed.hostname
-                
                 try:
                     port = parsed.port
                 except (ValueError, AttributeError, TypeError):
@@ -590,7 +812,6 @@ def pre_filter_live_hosts(all_configs):
             if not host or not port:
                 continue
             
-            # Validate port
             try:
                 port = int(port)
             except (ValueError, TypeError):
@@ -601,7 +822,6 @@ def pre_filter_live_hosts(all_configs):
                 parse_errors += 1
                 continue
             
-            # Resolve to IP
             ip_addr = resolve_domain_to_ip(host)
             if not ip_addr:
                 continue
@@ -609,8 +829,7 @@ def pre_filter_live_hosts(all_configs):
             host_port_key = f"{ip_addr}:{port}"
             if host_port_key not in host_port_to_fingerprint:
                 host_port_to_fingerprint[host_port_key] = fp
-                
-        except Exception:
+        except:
             parse_errors += 1
             continue
     
@@ -619,7 +838,6 @@ def pre_filter_live_hosts(all_configs):
     
     print(f"Testing {len(host_port_to_fingerprint)} unique host:port pairs...")
     
-    # Test connectivity
     live_host_ports = set()
     hosts_to_test = list(host_port_to_fingerprint.keys())
     
@@ -632,12 +850,10 @@ def pre_filter_live_hosts(all_configs):
         for i, future in enumerate(concurrent.futures.as_completed(future_to_host)):
             if (i + 1) % 1000 == 0:
                 print(f"Tested {i+1}/{len(hosts_to_test)} hosts...")
-            
             result = future.result()
             if result:
                 live_host_ports.add(result)
     
-    # Map back to configs
     live_fingerprints = {
         host_port_to_fingerprint[hp] 
         for hp in live_host_ports 
@@ -653,47 +869,30 @@ def pre_filter_live_hosts(all_configs):
     print(f"Pre-filter complete: {len(live_configs)} live configs")
     return live_configs
 
-# --- CONFIG PROCESSING ---
-
 def process_and_convert_configs(configs):
-    """Processes configs: Domain→IP + GeoIP + Renaming."""
-    print(f"\n--- Processing {len(configs)} configs for categorized outputs ---")
-    
+    print(f"\n--- Processing {len(configs)} configs ---")
     processed = []
-    stats = {
-        'converted': 0,
-        'failed_attrs': 0
-    }
+    stats = {'converted': 0, 'failed_attrs': 0}
     
     for config in configs:
-        # Convert domain to IP
         ip_config = replace_domain_with_ip(config)
         if ip_config != config:
             stats['converted'] += 1
-        
-        # Get attributes
         attrs = get_config_attributes(ip_config)
         if not attrs:
             stats['failed_attrs'] += 1
             continue
-        
-        # Rename with custom format: 🇹🇷 @MoboNetPC 🇹🇷
         final_config = rename_config(ip_config, attrs['country'])
-        processed.append({
-            'config': final_config,
-            'attrs': attrs
-        })
+        processed.append({'config': final_config, 'attrs': attrs})
     
     print(f"Converted {stats['converted']} configs to IP")
     print(f"Failed to parse {stats['failed_attrs']} configs")
-    
     return processed
 
 # --- MAIN EXECUTION ---
 
 def main():
     global geoip_reader
-    
     setup_directories()
     
     # Download GeoIP
@@ -705,7 +904,6 @@ def main():
             "https://raw.githubusercontent.com/Loyalsoldier/geoip/release/Country.mmdb",
             "https://git.io/GeoLite2-Country.mmdb"
         ]
-        
         for url in urls:
             try:
                 r = requests.get(url, allow_redirects=True, timeout=30)
@@ -714,7 +912,7 @@ def main():
                         f.write(r.content)
                     print(f"✓ GeoIP downloaded ({len(r.content)} bytes)")
                     break
-            except Exception:
+            except:
                 continue
     
     try:
@@ -722,7 +920,7 @@ def main():
     except Exception as e:
         print(f"Warning: Could not load GeoIP: {e}")
     
-    # Collect configs
+    # Collect configs from ALL sources
     all_raw_configs = set()
     
     print("\n--- Collecting from subscription links.json ---")
@@ -730,76 +928,86 @@ def main():
     for link in subs_links:
         try:
             content = requests.get(link, timeout=15).text
-            
-            # Decode if base64
             if re.match(r'^[A-Za-z0-9+/=]{100,}$', content.strip().replace('\n', '')):
                 try:
                     content = base64.b64decode(content).decode('utf-8', 'ignore')
-                except Exception:
+                except:
                     pass
-            
             all_raw_configs.update(find_configs_raw(content))
-        except Exception:
+        except:
+            continue
+    print(f"Collected {len(all_raw_configs)} configs from local subscriptions")
+    
+    # PHASE 1
+    all_raw_configs.update(fetch_from_github_code())
+    all_raw_configs.update(fetch_from_github_repos())
+    all_raw_configs.update(fetch_from_known_patterns())
+    
+    # PHASE 2
+    all_raw_configs.update(fetch_from_popular_forks())
+    all_raw_configs.update(fetch_from_topics())
+    
+    # Extract new subscription links from READMEs
+    new_links = fetch_subscription_links_from_readmes()
+    print(f"\n--- Testing {len(new_links)} newly discovered subscription links ---")
+    for link in list(new_links)[:50]:  # Test first 50
+        try:
+            content = requests.get(link, timeout=10).text
+            found = find_configs_raw(content)
+            if found:
+                all_raw_configs.update(found)
+                print(f"  ✓ {link[:60]}: {len(found)} configs")
+        except:
             continue
     
-    print(f"Collected {len(all_raw_configs)} configs from subscriptions")
+    # PHASE 3
+    all_raw_configs.update(fetch_with_graphql())
     
-    # Fetch from GitHub
-    all_raw_configs.update(fetch_from_github())
-    
-    print(f"\n{'='*60}")
-    print(f"  COLLECTION SUMMARY")
-    print(f"{'='*60}")
+    print(f"\n{'='*70}")
+    print(f"  COLLECTION SUMMARY (ALL PHASES)")
+    print(f"{'='*70}")
     print(f"  Total raw configs collected: {len(all_raw_configs)}")
-    print(f"{'='*60}\n")
+    print(f"{'='*70}\n")
     
     if not all_raw_configs:
         print("No configs collected. Exiting.")
         return
     
-    # Pre-filter for live hosts
+    # Pre-filter
     live_configs = pre_filter_live_hosts(list(all_raw_configs))
     
     if not live_configs:
         print("No live configs found. Exiting.")
         return
     
-    # --- UPDATED: Convert to SNI-as-address AND rename for filtered-for-refiner.txt ---
-    print("\n--- Converting configs to SNI-as-address for refiner ---")
+    # Convert for refiner
+    print("\n--- Converting configs for filtered-for-refiner.txt ---")
     sni_configs = []
     conversion_count = 0
     rename_count = 0
     
     for config in live_configs:
-        # Apply SNI→Address conversion
         sni_config = replace_address_with_sni(config)
         if sni_config != config:
             conversion_count += 1
-        
-        # Get attributes for renaming
         attrs = get_config_attributes(sni_config)
         if attrs:
-            # Rename with custom format: 🇹🇷 @MoboNetPC 🇹🇷
             renamed_config = rename_config(sni_config, attrs['country'])
             sni_configs.append(renamed_config)
             rename_count += 1
         else:
-            # If attributes fail, keep original
             sni_configs.append(sni_config)
     
-    print(f"Converted {conversion_count} configs to use SNI/host as address")
-    print(f"Renamed {rename_count} configs with custom format")
+    print(f"Converted {conversion_count} to SNI, renamed {rename_count}")
     
-    # Save SNI-based + renamed configs to filtered-for-refiner.txt
     with open('filtered-for-refiner.txt', 'w', encoding='utf-8') as f:
         for config in sni_configs:
             f.write(config + '\n')
-    print(f"✓ Saved {len(sni_configs)} SNI-based + renamed configs to filtered-for-refiner.txt")
+    print(f"✓ Saved {len(sni_configs)} configs to filtered-for-refiner.txt")
     
-    # Find REALITY+gRPC configs
+    # REALITY+gRPC
     print("\n--- Searching for REALITY+gRPC configs ---")
     reality_grpc_configs = []
-    
     for config in live_configs:
         attrs = get_config_attributes(config)
         if attrs and attrs['security'] == 'reality' and attrs['network'] == 'grpc':
@@ -810,15 +1018,12 @@ def main():
             for cfg in reality_grpc_configs:
                 f.write(cfg + '\n')
         print(f"Found {len(reality_grpc_configs)} REALITY+gRPC configs")
-    else:
-        print("No REALITY+gRPC configs found")
     
-    # Process with IP conversion for categorized outputs
+    # Process for categorization
     processed_configs = process_and_convert_configs(live_configs)
     
     # Categorize
     print("\n--- Categorizing configs ---")
-    
     by_protocol = {}
     by_network = {}
     by_security = {}
@@ -828,25 +1033,21 @@ def main():
         config = item['config']
         attrs = item['attrs']
         
-        # By protocol
         proto = attrs['protocol']
         if proto not in by_protocol:
             by_protocol[proto] = []
         by_protocol[proto].append(config)
         
-        # By network
         net = attrs['network']
         if net not in by_network:
             by_network[net] = []
         by_network[net].append(config)
         
-        # By security
         sec = attrs['security']
         if sec not in by_security:
             by_security[sec] = []
         by_security[sec].append(config)
         
-        # By country
         country = attrs['country'].lower()
         if country not in by_country:
             by_country[country] = []
@@ -854,27 +1055,22 @@ def main():
     
     # Write files
     print("\n--- Writing subscription files ---")
-    
     for proto, configs in by_protocol.items():
         write_chunked_subscription_files(f'./protocols/{proto}', configs)
-    
     for net, configs in by_network.items():
         write_chunked_subscription_files(f'./networks/{net}', configs)
-    
     for sec, configs in by_security.items():
         write_chunked_subscription_files(f'./security/{sec}', configs)
-    
     for country, configs in by_country.items():
         write_chunked_subscription_files(f'./countries/{country}', configs)
     
-    # Write mixed file
     all_final_configs = [item['config'] for item in processed_configs]
     write_chunked_subscription_files('./splitted/mixed', all_final_configs)
     
     # Final summary
-    print(f"\n{'='*60}")
+    print(f"\n{'='*70}")
     print(f"  FINAL SUMMARY")
-    print(f"{'='*60}")
+    print(f"{'='*70}")
     print(f"  Raw configs collected           : {len(all_raw_configs)}")
     print(f"  Live configs (filtered)         : {len(live_configs)}")
     print(f"  SNI-based (for refiner)         : {len(sni_configs)}")
@@ -885,8 +1081,8 @@ def main():
     print(f"  Networks                        : {len(by_network)}")
     print(f"  Security types                  : {len(by_security)}")
     print(f"  Countries                       : {len(by_country)}")
-    print(f"{'='*60}")
-    print(f"\n✓ All configs renamed to: 🇹🇷 @MoboNetPC 🇹🇷 format (per country)")
+    print(f"{'='*70}")
+    print(f"\n✓ All 3 phases complete - Massively expanded search!")
     print("--- COLLECTOR FINISHED SUCCESSFULLY ---")
 
 if __name__ == "__main__":
