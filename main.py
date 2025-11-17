@@ -1,5 +1,5 @@
-# FILE: main.py (for your GitHub scraper repo: v2ray-collector)
-# VERSION 42.0: Historical Databases + Capped Active Subscription Files
+# FILE: main.py (for your GitHub scraper repo)
+# VERSION 42.1: Historical Databases + Accumulating Active Files (cap 1111)
 
 import os, json, re, base64, time, traceback, socket, ipaddress
 import requests
@@ -8,7 +8,7 @@ import concurrent.futures
 import geoip2.database
 from dns import resolver
 
-print("--- GITHUB COLLECTOR v42.0 (Databases + Capped Files) START ---")
+print("--- GITHUB COLLECTOR v42.1 (Databases + Accumulating Active Files) START ---")
 
 # --- CONFIGURATION ---
 CONFIG_CHUNK_SIZE = 44444
@@ -19,13 +19,14 @@ VALIDATED_LINKS_FILE = 'validated_subscriptions.json'
 # NEW: Database and active file limits
 DATABASE_SNI = 'database_sni.txt'
 DATABASE_IP = 'database_ip.txt'
-ACTIVE_FILE_SNI = 'filtered-for-refiner.txt'
-ACTIVE_FILE_IP = 'latest_ip_configs.txt'
+ACTIVE_FILE_SNI = 'filtered-for-refiner.txt'  # SNI-as-address active file
+ACTIVE_FILE_IP = 'latest_ip_configs.txt'      # IP active file
 MAX_ACTIVE_CONFIGS = 1111
 
 # --- SHARED CACHING & GLOBALS ---
 dns_cache = {}
 geoip_reader = None
+
 COUNTRY_FLAGS = {
     "AD": "🇦🇩", "AE": "🇦🇪", "AF": "🇦🇫", "AG": "🇦🇬", "AI": "🇦🇮", "AL": "🇦🇱", "AM": "🇦🇲", 
     "AO": "🇦🇴", "AQ": "🇦🇶", "AR": "🇦🇷", "AS": "🇦🇸", "AT": "🇦🇹", "AU": "🇦🇺", "AW": "🇦🇼", 
@@ -64,10 +65,10 @@ COUNTRY_FLAGS = {
     "ZM": "🇿🇲", "ZW": "🇿🇼", "XX": "🔓"
 }
 
-# --- DATABASE FUNCTIONS ---
-
+# =========================
+# Database helpers (base64)
+# =========================
 def load_database(db_file):
-    """Load historical database and return set of config strings."""
     if not os.path.exists(db_file):
         return set()
     try:
@@ -75,7 +76,6 @@ def load_database(db_file):
             content = f.read().strip()
             if not content:
                 return set()
-            # Decode from base64
             decoded = base64.b64decode(content).decode('utf-8')
             return set(decoded.splitlines())
     except Exception as e:
@@ -83,7 +83,6 @@ def load_database(db_file):
         return set()
 
 def save_database(db_file, configs_set):
-    """Save configs to database (base64 encoded)."""
     try:
         content = "\n".join(sorted(configs_set))
         encoded = base64.b64encode(content.encode('utf-8')).decode('utf-8')
@@ -93,9 +92,7 @@ def save_database(db_file, configs_set):
         print(f"Error saving {db_file}: {e}")
 
 def save_active_file(filepath, configs_list):
-    """Save active subscription file (base64 encoded, max 1111 configs)."""
     try:
-        # Take last 1111 configs (newest)
         configs_to_save = configs_list[-MAX_ACTIVE_CONFIGS:] if len(configs_list) > MAX_ACTIVE_CONFIGS else configs_list
         content = "\n".join(configs_to_save)
         encoded = base64.b64encode(content.encode('utf-8')).decode('utf-8')
@@ -106,8 +103,41 @@ def save_active_file(filepath, configs_list):
         print(f"Error saving {filepath}: {e}")
         return 0
 
-# --- HELPER FUNCTIONS (Same as before) ---
+def load_list_from_file(filepath):
+    if not os.path.exists(filepath): 
+        return []
+    try:
+        with open(filepath, 'r') as f:
+            content = f.read()
+            if content: 
+                return base64.b64decode(content).decode('utf-8').splitlines()
+    except Exception as e:
+        print(f"Error loading {filepath}: {e}")
+        return []
+    return []
 
+def merge_active_by_fingerprint(existing_list, new_list):
+    """
+    Merge existing + new (in order), deduplicate by fingerprint keeping the LAST occurrence (newer),
+    then cap to newest MAX_ACTIVE_CONFIGS.
+    """
+    combined = existing_list + new_list
+    seen = set()
+    dedup_rev = []
+    for cfg in reversed(combined):
+        fp = get_config_fingerprint(cfg)
+        key = fp if fp else f"RAW::{cfg}"
+        if key not in seen:
+            dedup_rev.append(cfg)
+            seen.add(key)
+    dedup = list(reversed(dedup_rev))
+    if len(dedup) > MAX_ACTIVE_CONFIGS:
+        dedup = dedup[-MAX_ACTIVE_CONFIGS:]
+    return dedup
+
+# =========================
+# Resolution & parsing
+# =========================
 def country_code_to_flag(iso_code):
     return COUNTRY_FLAGS.get(iso_code, "🌐")
 
@@ -144,7 +174,7 @@ def parse_vmess_config(config_str):
                 parsed = json.loads(decoded)
                 if 'add' in parsed and 'port' in parsed and 'id' in parsed:
                     return parsed
-            except (UnicodeDecodeError, json.JSONDecodeError):
+            except Exception:
                 continue
         return None
     except Exception:
@@ -175,7 +205,6 @@ def get_config_fingerprint(config_str):
             except:
                 port = ''
             return f"{parsed.scheme}|{parsed.hostname}|{port}|{parsed.username}"
-        return None
     except Exception:
         return None
 
@@ -187,7 +216,7 @@ def replace_address_with_sni(config_str):
                 return config_str
             sni = vmess_data.get('sni', '').strip()
             host = vmess_data.get('host', '').strip()
-            current_addr = vmess_data.get('add', '')
+            current_addr = vmess_data.get('add', '').strip()
             new_addr = sni or host
             if new_addr and new_addr != current_addr:
                 vmess_data['add'] = new_addr
@@ -200,7 +229,7 @@ def replace_address_with_sni(config_str):
             sni = params.get('sni', [''])[0].strip()
             host = params.get('host', [''])[0].strip()
             new_addr = sni or host
-            if new_addr and new_addr != parsed.hostname:
+            if new_addr and new_addr != (parsed.hostname or ''):
                 new_netloc = new_addr
                 try:
                     if parsed.port:
@@ -304,7 +333,6 @@ def get_config_attributes(config_str):
             if security != 'reality' and 'pbk' in params:
                 security = 'reality'
             country = get_country_from_hostname(hostname).upper()
-        
         valid_protocols = ['vmess', 'vless', 'trojan', 'ss', 'hy2', 'hysteria', 'tuic', 'juicity']
         if not protocol or protocol not in valid_protocols:
             return None
@@ -316,7 +344,6 @@ def get_config_attributes(config_str):
             security = 'none'
         if not country or len(country) != 2 or not country.isalpha():
             country = 'XX'
-        
         return {'protocol': protocol, 'network': network, 'security': security, 'country': country}
     except Exception:
         return None
@@ -329,6 +356,7 @@ def rename_config(config_str, country_code):
     except Exception:
         return config_str
 
+# --- FS helpers ---
 def setup_directories():
     import shutil
     dirs = ['./splitted', './subscribe', './protocols', './networks', './countries', './security']
@@ -373,11 +401,10 @@ def write_chunked_subscription_files(base_filepath, configs):
             f"{os.path.basename(base_filepath)}{i + 1}"
         )
         content = base64.b64encode("\n".join(chunk).encode("utf-8")).decode("utf-8")
-        with open(filepath, "w", encoding='utf-8') as f:
+        with open(filepath, "w", encoding="utf-8") as f:
             f.write(content)
 
-# --- COLLECTION FUNCTIONS (Keeping them compact) ---
-
+# --- TIER 1: DIRECT AGGREGATORS ---
 def fetch_from_direct_aggregators():
     print("\n--- [TIER 1] Direct Aggregators ---")
     configs = set()
@@ -411,6 +438,7 @@ def fetch_from_direct_aggregators():
     print(f"Collected {len(configs)} from aggregators")
     return configs
 
+# --- TIER 2: CODE SEARCH ---
 def fetch_from_github_code_search():
     print("\n--- [TIER 2] GitHub Code Search ---")
     if not COLLECTOR_TOKEN:
@@ -466,6 +494,7 @@ def fetch_from_github_code_search():
     print(f"Collected {len(configs)} from code search")
     return configs
 
+# --- TIER 2: SMART REPO SEARCH ---
 def fetch_from_github_repos_smart():
     print("\n--- [TIER 2] Smart Repo Search ---")
     if not COLLECTOR_TOKEN:
@@ -523,6 +552,7 @@ def fetch_from_github_repos_smart():
     print(f"Collected {len(configs)} from smart repo search")
     return configs
 
+# --- TIER 3: VALIDATED LINKS CACHE ---
 def load_validated_links():
     try:
         with open(VALIDATED_LINKS_FILE, 'r') as f:
@@ -562,7 +592,6 @@ def fetch_and_validate_readme_links():
     return configs
 
 # --- PRE-FILTERING ---
-
 def pre_filter_live_hosts(all_configs):
     print(f"\n--- Pre-filtering {len(all_configs)} configs ---")
     fingerprint_to_config = {}
@@ -629,6 +658,7 @@ def pre_filter_live_hosts(all_configs):
     print(f"Pre-filter complete: {len(live_configs)} live configs")
     return live_configs
 
+# --- PROCESSING ---
 def process_and_convert_configs(configs):
     print(f"\n--- Processing {len(configs)} configs ---")
     processed = []
@@ -647,7 +677,6 @@ def process_and_convert_configs(configs):
     return processed
 
 # --- MAIN EXECUTION ---
-
 def main():
     global geoip_reader
     setup_directories()
@@ -673,9 +702,9 @@ def main():
     try:
         geoip_reader = geoip2.database.Reader(db_path)
     except Exception as e:
-        print(f"Warning: GeoIP failed: {e}")
+        print(f"Warning: GeoIP load failed: {e}")
     
-    # Collect configs
+    # Collect from all sources
     all_raw_configs = set()
     
     print("\n--- Collecting from subscription links.json ---")
@@ -712,81 +741,65 @@ def main():
         print("No live configs. Exiting.")
         return
     
-    # === SNI PROCESSING ===
+    # === SNI DATABASE PROCESSING ===
     print(f"\n{'='*70}")
     print(f"  SNI DATABASE PROCESSING")
     print(f"{'='*70}")
     
-    # Load SNI database
-    print(f"Loading {DATABASE_SNI}...")
     db_sni = load_database(DATABASE_SNI)
-    print(f"  Database contains {len(db_sni)} historical configs")
+    print(f"Loaded {len(db_sni)} historical SNI configs from database")
     
-    # Convert to SNI and rename
-    sni_configs_list = []
-    for config in live_configs:
-        sni_config = replace_address_with_sni(config)
-        attrs = get_config_attributes(sni_config)
+    # Build SNI-based configs (SNI/host as address) and rename
+    sni_configs_in_order = []
+    for cfg in live_configs:
+        sni_cfg = replace_address_with_sni(cfg)
+        attrs = get_config_attributes(sni_cfg)
         if attrs:
-            renamed = rename_config(sni_config, attrs['country'])
-            sni_configs_list.append(renamed)
+            sni_configs_in_order.append(rename_config(sni_cfg, attrs['country']))
         else:
-            sni_configs_list.append(sni_config)
+            sni_configs_in_order.append(sni_cfg)
     
-    # Find NEW configs not in database
-    sni_configs_set = set(sni_configs_list)
-    new_sni_configs = sni_configs_set - db_sni
-    print(f"  Found {len(new_sni_configs)} NEW SNI configs")
-    
-    # Update database with ALL new configs
-    if new_sni_configs:
-        db_sni.update(new_sni_configs)
+    # New vs DB (string-level)
+    sni_new = [c for c in sni_configs_in_order if c not in db_sni]
+    print(f"Found {len(sni_new)} NEW SNI configs")
+    if sni_new:
+        db_sni.update(sni_new)
         save_database(DATABASE_SNI, db_sni)
-        print(f"  ✓ Updated {DATABASE_SNI} (now {len(db_sni)} total)")
+        print(f"✓ Updated {DATABASE_SNI} (now {len(db_sni)} total)")
         
-        # Save newest 1111 to active file
-        new_sni_list = list(new_sni_configs)
-        saved_count = save_active_file(ACTIVE_FILE_SNI, new_sni_list)
-        print(f"  ✓ Saved {saved_count} newest to {ACTIVE_FILE_SNI}")
+        # Accumulate Active SNI
+        existing_active_sni = load_list_from_file(ACTIVE_FILE_SNI) or []
+        active_sni_merged = merge_active_by_fingerprint(existing_active_sni, sni_new)
+        saved_count = save_active_file(ACTIVE_FILE_SNI, active_sni_merged)
+        print(f"✓ Saved {saved_count} to {ACTIVE_FILE_SNI} (accumulated)")
     else:
-        print(f"  No new SNI configs to add")
-        # Still create empty active file
-        save_active_file(ACTIVE_FILE_SNI, [])
+        print("No new SNI configs to add this run (active file left unchanged)")
     
-    # === IP PROCESSING ===
+    # === IP DATABASE PROCESSING ===
     print(f"\n{'='*70}")
     print(f"  IP DATABASE PROCESSING")
     print(f"{'='*70}")
     
-    # Load IP database
-    print(f"Loading {DATABASE_IP}...")
     db_ip = load_database(DATABASE_IP)
-    print(f"  Database contains {len(db_ip)} historical configs")
+    print(f"Loaded {len(db_ip)} historical IP configs from database")
     
-    # Process with IP conversion
     processed = process_and_convert_configs(live_configs)
+    ip_configs_in_order = [item['config'] for item in processed]
     
-    # Extract just the config strings
-    ip_configs_list = [item['config'] for item in processed]
-    
-    # Find NEW configs not in database
-    ip_configs_set = set(ip_configs_list)
-    new_ip_configs = ip_configs_set - db_ip
-    print(f"  Found {len(new_ip_configs)} NEW IP configs")
-    
-    # Update database with ALL new configs
-    if new_ip_configs:
-        db_ip.update(new_ip_configs)
+    ip_new = [c for c in ip_configs_in_order if c not in db_ip]
+    print(f"Found {len(ip_new)} NEW IP configs")
+    if ip_new:
+        db_ip.update(ip_new)
         save_database(DATABASE_IP, db_ip)
-        print(f"  ✓ Updated {DATABASE_IP} (now {len(db_ip)} total)")
+        print(f"✓ Updated {DATABASE_IP} (now {len(db_ip)} total)")
         
-        # Save newest 1111 to active file
-        new_ip_list = list(new_ip_configs)
-        saved_count = save_active_file(ACTIVE_FILE_IP, new_ip_list)
-        print(f"  ✓ Saved {saved_count} newest to {ACTIVE_FILE_IP}")
+        # Accumulate Active IP
+        existing_active_ip = load_list_from_file(ACTIVE_FILE_IP) or []
+        active_ip_merged = merge_active_by_fingerprint(existing_active_ip, ip_new)
+        saved_count = save_active_file(ACTIVE_FILE_IP, active_ip_merged)
+        print(f"✓ Saved {saved_count} to {ACTIVE_FILE_IP} (accumulated)")
     else:
-        print(f"  No new IP configs to add")
-        save_active_file(ACTIVE_FILE_IP, [])
+        print("No new IP configs to add this run (active file left unchanged)")
     
     # === CATEGORIZATION (using ALL processed configs) ===
     print(f"\n{'='*70}")
@@ -813,39 +826,27 @@ def main():
     all_final = [item['config'] for item in processed]
     write_chunked_subscription_files('./splitted/mixed', all_final)
     
-    # REALITY+gRPC
-    reality_grpc = [c for c in live_configs if (a := get_config_attributes(c)) and a['security'] == 'reality' and a['network'] == 'grpc']
-    if reality_grpc:
-        with open('reality-grpc-configs.txt', 'w', encoding='utf-8') as f:
-            for cfg in reality_grpc:
-                f.write(cfg + '\n')
-    
-    # Final Summary
+    # Final summary
     print(f"\n{'='*70}")
     print(f"  FINAL SUMMARY")
     print(f"{'='*70}")
     print(f"  Raw collected          : {len(all_raw_configs)}")
     print(f"  Live filtered          : {len(live_configs)}")
-    print(f"  ")
-    print(f"  SNI Database total     : {len(db_sni)}")
-    print(f"  SNI new this run       : {len(new_sni_configs)}")
-    print(f"  SNI active file        : {min(len(new_sni_configs), MAX_ACTIVE_CONFIGS)}")
-    print(f"  ")
-    print(f"  IP Database total      : {len(db_ip)}")
-    print(f"  IP new this run        : {len(new_ip_configs)}")
-    print(f"  IP active file         : {min(len(new_ip_configs), MAX_ACTIVE_CONFIGS)}")
-    print(f"  ")
-    print(f"  REALITY+gRPC           : {len(reality_grpc)}")
-    print(f"  Protocols              : {len(by_protocol)}")
-    print(f"  Networks               : {len(by_network)}")
-    print(f"  Countries              : {len(by_country)}")
+    print(f"  SNI DB total           : {len(db_sni)}")
+    print(f"  IP  DB total           : {len(db_ip)}")
+    print(f"  Active SNI (current)   : {len(load_list_from_file(ACTIVE_FILE_SNI))}")
+    print(f"  Active IP (current)    : {len(load_list_from_file(ACTIVE_FILE_IP))}")
+    print(f"  Protocol groups        : {len(by_protocol)}")
+    print(f"  Network groups         : {len(by_network)}")
+    print(f"  Security groups        : {len(by_security)}")
+    print(f"  Country groups         : {len(by_country)}")
     print(f"{'='*70}")
-    print("\n✓ COMPLETE - Databases Updated!")
+    print("\n✓ COLLECTION COMPLETE - Databases & Active Files Updated!")
 
 if __name__ == "__main__":
     try:
         main()
     except Exception:
         print("\n--- FATAL ERROR ---")
-        traceback.print_exc()
+        traceback.print_exc())
         exit(1)
