@@ -848,5 +848,5 @@ if __name__ == "__main__":
         main()
     except Exception:
         print("\n--- FATAL ERROR ---")
-        traceback.print_exc())
+        traceback.print_exc()
         exit(1)
