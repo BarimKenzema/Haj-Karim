@@ -21,7 +21,7 @@ DATABASE_SNI = 'database_sni.txt'
 DATABASE_IP = 'database_ip.txt'
 ACTIVE_FILE_SNI = 'filtered-for-refiner.txt'  # SNI-as-address active file
 ACTIVE_FILE_IP = 'latest_ip_configs.txt'      # IP active file
-MAX_ACTIVE_CONFIGS = 1111
+MAX_ACTIVE_CONFIGS = 4444
 
 # --- SHARED CACHING & GLOBALS ---
 dns_cache = {}
