@@ -4,7 +4,7 @@ import os
 import base64
 import json
 from datetime import datetime
-from urllib.parse import urlparse, unquote
+from urllib.parse import urlparse, unquote, quote
 
 # Source files
 SOURCES = [
@@ -100,20 +100,33 @@ def rename_config(config_line):
     protocol_part, name_part = config_line.rsplit('#', 1)
     name_part = unquote(name_part)  # Decode URL encoding
     
-    # Pattern 1: 🇹🇷 @MoboNetPC 🇹🇷 → 🇹🇷 Support 👉 @MoboNetPC 🇹🇷
-    # More flexible pattern to catch variations
-    pattern1 = re.search(r'^([\U0001F1E6-\U0001F1FF]{2})\s*@MoboNetPC\s*([\U0001F1E6-\U0001F1FF]{2})$', name_part)
-    if pattern1:
-        flag = pattern1.group(1)
+    # Pattern 1: Flag emoji + @MoboNetPC + Flag emoji → Flag + Support 👉 @MoboNetPC + Flag
+    # Example: 🇹🇷 @MoboNetPC 🇹🇷 → 🇹🇷 Support 👉 @MoboNetPC 🇹🇷
+    pattern1_flag = re.match(r'^([\U0001F1E6-\U0001F1FF]{2})\s*@MoboNetPC\s*([\U0001F1E6-\U0001F1FF]{2})$', name_part)
+    if pattern1_flag:
+        flag = pattern1_flag.group(1)
         new_name = f"{flag} Support 👉 @MoboNetPC {flag}"
-        return f"{protocol_part}#{requests.utils.quote(new_name, safe='')}"
+        return f"{protocol_part}#{quote(new_name, safe='')}"
     
-    # Pattern 2: 🇹🇷 @VPNProxyTestSupport 🇹🇷 → 🇹🇷 پشتیبانی 👉 @VPNProxyTestSupport 🇹🇷
-    pattern2 = re.search(r'^([\U0001F1E6-\U0001F1FF]{2})\s*@VPNProxyTestSupport\s*([\U0001F1E6-\U0001F1FF]{2})$', name_part)
-    if pattern2:
-        flag = pattern2.group(1)
+    # Pattern 2: 🔓 @MoboNetPC 🔓 → 🔓 Support 👉 @MoboNetPC 🔓
+    pattern1_lock = re.match(r'^🔓\s*@MoboNetPC\s*🔓$', name_part)
+    if pattern1_lock:
+        new_name = "🔓 Support 👉 @MoboNetPC 🔓"
+        return f"{protocol_part}#{quote(new_name, safe='')}"
+    
+    # Pattern 3: Flag emoji + @VPNProxyTest + Flag emoji → Flag + پشتیبانی 👉 @VPNProxyTestSupport + Flag
+    # Example: 🇹🇷 @VPNProxyTest 🇹🇷 → 🇹🇷 پشتیبانی 👉 @VPNProxyTestSupport 🇹🇷
+    pattern2_flag = re.match(r'^([\U0001F1E6-\U0001F1FF]{2})\s*@VPNProxyTest\s*([\U0001F1E6-\U0001F1FF]{2})$', name_part)
+    if pattern2_flag:
+        flag = pattern2_flag.group(1)
         new_name = f"{flag} پشتیبانی 👉 @VPNProxyTestSupport {flag}"
-        return f"{protocol_part}#{requests.utils.quote(new_name, safe='')}"
+        return f"{protocol_part}#{quote(new_name, safe='')}"
+    
+    # Pattern 4: 🔓 @VPNProxyTest 🔓 → 🔓 پشتیبانی 👉 @VPNProxyTestSupport 🔓
+    pattern2_lock = re.match(r'^🔓\s*@VPNProxyTest\s*🔓$', name_part)
+    if pattern2_lock:
+        new_name = "🔓 پشتیبانی 👉 @VPNProxyTestSupport 🔓"
+        return f"{protocol_part}#{quote(new_name, safe='')}"
     
     # If no pattern matches, return original
     return config_line
