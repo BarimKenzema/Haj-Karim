@@ -1,10 +1,10 @@
 import requests
 import re
 import os
-from datetime import datetime
-from urllib.parse import urlparse, unquote
 import base64
 import json
+from datetime import datetime
+from urllib.parse import urlparse, unquote
 
 # Source files
 SOURCES = [
@@ -26,12 +26,34 @@ def download_file(url):
         print(f"❌ Error downloading {url}: {e}")
         return ""
 
+def decode_subscription(content):
+    """Decode base64 subscription if needed."""
+    content = content.strip()
+    
+    # Check if content is base64 encoded (doesn't start with protocol://)
+    if not content.startswith(('vless://', 'vmess://', 'trojan://', 'ss://', 'hysteria://', 'hy2://')):
+        try:
+            # Try to decode as base64
+            # Add padding if needed
+            missing_padding = len(content) % 4
+            if missing_padding:
+                content += '=' * (4 - missing_padding)
+            
+            decoded = base64.b64decode(content).decode('utf-8')
+            print(f"    ℹ️  Decoded base64 subscription")
+            return decoded
+        except:
+            # If decode fails, return as-is
+            pass
+    
+    return content
+
 def extract_server_port(config_line):
     """Extract server:port from v2ray config for deduplication."""
     config_line = config_line.strip()
     
     # vless:// or trojan://
-    if config_line.startswith(('vless://', 'trojan://')):
+    if config_line.startswith(('vless://', 'trojan://', 'hysteria://', 'hy2://')):
         try:
             # Format: protocol://uuid@server:port?params#name
             match = re.search(r'@([^:?#]+):(\d+)', config_line)
@@ -46,7 +68,10 @@ def extract_server_port(config_line):
             # Decode base64
             b64_part = config_line.replace('vmess://', '').split('#')[0]
             # Add padding if needed
-            b64_part += '=' * (4 - len(b64_part) % 4)
+            missing_padding = len(b64_part) % 4
+            if missing_padding:
+                b64_part += '=' * (4 - missing_padding)
+            
             decoded = base64.b64decode(b64_part).decode('utf-8')
             vmess_data = json.loads(decoded)
             return f"{vmess_data.get('add', '')}:{vmess_data.get('port', '')}"
@@ -76,14 +101,15 @@ def rename_config(config_line):
     name_part = unquote(name_part)  # Decode URL encoding
     
     # Pattern 1: 🇹🇷 @MoboNetPC 🇹🇷 → 🇹🇷 Support 👉 @MoboNetPC 🇹🇷
-    pattern1 = re.match(r'^([\U0001F1E6-\U0001F1FF]{2})\s*@MoboNetPC\s*([\U0001F1E6-\U0001F1FF]{2})$', name_part)
+    # More flexible pattern to catch variations
+    pattern1 = re.search(r'^([\U0001F1E6-\U0001F1FF]{2})\s*@MoboNetPC\s*([\U0001F1E6-\U0001F1FF]{2})$', name_part)
     if pattern1:
         flag = pattern1.group(1)
         new_name = f"{flag} Support 👉 @MoboNetPC {flag}"
         return f"{protocol_part}#{requests.utils.quote(new_name, safe='')}"
     
     # Pattern 2: 🇹🇷 @VPNProxyTestSupport 🇹🇷 → 🇹🇷 پشتیبانی 👉 @VPNProxyTestSupport 🇹🇷
-    pattern2 = re.match(r'^([\U0001F1E6-\U0001F1FF]{2})\s*@VPNProxyTestSupport\s*([\U0001F1E6-\U0001F1FF]{2})$', name_part)
+    pattern2 = re.search(r'^([\U0001F1E6-\U0001F1FF]{2})\s*@VPNProxyTestSupport\s*([\U0001F1E6-\U0001F1FF]{2})$', name_part)
     if pattern2:
         flag = pattern2.group(1)
         new_name = f"{flag} پشتیبانی 👉 @VPNProxyTestSupport {flag}"
@@ -125,14 +151,30 @@ def main():
     for url in SOURCES:
         print(f"  • {url.split('/')[-1]}...", end=" ")
         content = download_file(url)
+        
         if content:
-            lines = [line.strip() for line in content.split('\n') if line.strip()]
-            all_configs.extend(lines)
-            print(f"✅ {len(lines)} configs")
+            # Try to decode if base64
+            decoded_content = decode_subscription(content)
+            
+            # Split by newlines and filter empty lines
+            lines = [line.strip() for line in decoded_content.split('\n') if line.strip()]
+            
+            # Filter only valid config lines (starting with known protocols)
+            valid_configs = [
+                line for line in lines 
+                if line.startswith(('vless://', 'vmess://', 'trojan://', 'ss://', 'hysteria://', 'hy2://'))
+            ]
+            
+            all_configs.extend(valid_configs)
+            print(f"✅ {len(valid_configs)} configs")
         else:
             print("❌ Failed")
     
     print(f"\n📊 Total configs downloaded: {len(all_configs)}")
+    
+    if len(all_configs) == 0:
+        print("❌ No configs found! Exiting.")
+        return
     
     # Step 2: Deduplicate based on server:port
     print("\n🔍 Deduplicating...")
