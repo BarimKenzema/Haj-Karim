@@ -2,9 +2,8 @@ name: Deduplicate V2Ray Configs
 
 on:
   schedule:
-    # Run every 4 hours
     - cron: '0 */4 * * *'
-  workflow_dispatch:  # Allow manual trigger
+  workflow_dispatch:
 
 jobs:
   deduplicate:
@@ -13,8 +12,7 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v3
-        with:
-          fetch-depth: 0
+        # No fetch-depth means shallow clone (fast!)
       
       - name: Set up Python
         uses: actions/setup-python@v4
@@ -23,7 +21,6 @@ jobs:
       
       - name: Install dependencies
         run: |
-          python -m pip install --upgrade pip
           pip install requests
       
       - name: Run deduplication script
@@ -31,10 +28,14 @@ jobs:
       
       - name: Commit and push changes
         run: |
-          git config --local user.email "github-actions[bot]@users.noreply.github.com"
-          git config --local user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git config user.name "github-actions[bot]"
           git add Pre-Hugs-*.txt
-          git diff --staged --quiet || git commit -m "🔄 Auto-update: Deduplicated configs ($(date '+%Y-%m-%d %H:%M:%S'))"
-          git push
+          if git diff --staged --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "🔄 Auto-update: Deduplicated configs ($(date '+%Y-%m-%d %H:%M'))"
+            git push
+          fi
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
