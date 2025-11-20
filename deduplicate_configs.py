@@ -1,0 +1,189 @@
+import requests
+import re
+import os
+from datetime import datetime
+from urllib.parse import urlparse, unquote
+import base64
+import json
+
+# Source files
+SOURCES = [
+    'https://raw.githubusercontent.com/BarimKenzema/Haj-Karim/refs/heads/main/latest_ip_configs.txt',
+    'https://raw.githubusercontent.com/BarimKenzema/Haj-Karim/refs/heads/main/filtered-for-refiner.txt',
+    'https://raw.githubusercontent.com/BarimKenzema/Final-Boss/refs/heads/main/active_ip_configs.txt',
+    'https://raw.githubusercontent.com/BarimKenzema/Final-Boss/refs/heads/main/active_sni_configs.txt'
+]
+
+OUTPUT_FILES = ['Pre-Hugs-1.txt', 'Pre-Hugs-2.txt', 'Pre-Hugs-3.txt', 'Pre-Hugs-4.txt']
+
+def download_file(url):
+    """Download content from URL."""
+    try:
+        response = requests.get(url, timeout=30)
+        response.raise_for_status()
+        return response.text
+    except Exception as e:
+        print(f"❌ Error downloading {url}: {e}")
+        return ""
+
+def extract_server_port(config_line):
+    """Extract server:port from v2ray config for deduplication."""
+    config_line = config_line.strip()
+    
+    # vless:// or trojan://
+    if config_line.startswith(('vless://', 'trojan://')):
+        try:
+            # Format: protocol://uuid@server:port?params#name
+            match = re.search(r'@([^:?#]+):(\d+)', config_line)
+            if match:
+                return f"{match.group(1)}:{match.group(2)}"
+        except:
+            pass
+    
+    # vmess://
+    elif config_line.startswith('vmess://'):
+        try:
+            # Decode base64
+            b64_part = config_line.replace('vmess://', '').split('#')[0]
+            # Add padding if needed
+            b64_part += '=' * (4 - len(b64_part) % 4)
+            decoded = base64.b64decode(b64_part).decode('utf-8')
+            vmess_data = json.loads(decoded)
+            return f"{vmess_data.get('add', '')}:{vmess_data.get('port', '')}"
+        except:
+            pass
+    
+    # ss:// (shadowsocks)
+    elif config_line.startswith('ss://'):
+        try:
+            # Format: ss://base64@server:port#name or ss://method:password@server:port#name
+            match = re.search(r'@([^:?#]+):(\d+)', config_line)
+            if match:
+                return f"{match.group(1)}:{match.group(2)}"
+        except:
+            pass
+    
+    # If can't parse, use entire line as unique identifier
+    return config_line
+
+def rename_config(config_line):
+    """Rename config according to new pattern."""
+    # Extract the remark/name part (after #)
+    if '#' not in config_line:
+        return config_line
+    
+    protocol_part, name_part = config_line.rsplit('#', 1)
+    name_part = unquote(name_part)  # Decode URL encoding
+    
+    # Pattern 1: 🇹🇷 @MoboNetPC 🇹🇷 → 🇹🇷 Support 👉 @MoboNetPC 🇹🇷
+    pattern1 = re.match(r'^([\U0001F1E6-\U0001F1FF]{2})\s*@MoboNetPC\s*([\U0001F1E6-\U0001F1FF]{2})$', name_part)
+    if pattern1:
+        flag = pattern1.group(1)
+        new_name = f"{flag} Support 👉 @MoboNetPC {flag}"
+        return f"{protocol_part}#{requests.utils.quote(new_name, safe='')}"
+    
+    # Pattern 2: 🇹🇷 @VPNProxyTestSupport 🇹🇷 → 🇹🇷 پشتیبانی 👉 @VPNProxyTestSupport 🇹🇷
+    pattern2 = re.match(r'^([\U0001F1E6-\U0001F1FF]{2})\s*@VPNProxyTestSupport\s*([\U0001F1E6-\U0001F1FF]{2})$', name_part)
+    if pattern2:
+        flag = pattern2.group(1)
+        new_name = f"{flag} پشتیبانی 👉 @VPNProxyTestSupport {flag}"
+        return f"{protocol_part}#{requests.utils.quote(new_name, safe='')}"
+    
+    # If no pattern matches, return original
+    return config_line
+
+def get_oldest_output_file():
+    """Find the oldest Pre-Hugs file (or first non-existent one)."""
+    oldest_file = None
+    oldest_time = None
+    
+    for filename in OUTPUT_FILES:
+        if not os.path.exists(filename):
+            # If file doesn't exist, use this one
+            print(f"📝 File '{filename}' doesn't exist. Using it.")
+            return filename
+        
+        # Get file modification time
+        mtime = os.path.getmtime(filename)
+        
+        if oldest_time is None or mtime < oldest_time:
+            oldest_time = mtime
+            oldest_file = filename
+    
+    print(f"🔄 Oldest file is '{oldest_file}'. Overwriting it.")
+    return oldest_file
+
+def main():
+    print("="*60)
+    print("🔄 V2RAY CONFIG DEDUPLICATOR & RENAMER")
+    print("="*60)
+    
+    # Step 1: Download all source files
+    print("\n📥 Downloading source files...")
+    all_configs = []
+    
+    for url in SOURCES:
+        print(f"  • {url.split('/')[-1]}...", end=" ")
+        content = download_file(url)
+        if content:
+            lines = [line.strip() for line in content.split('\n') if line.strip()]
+            all_configs.extend(lines)
+            print(f"✅ {len(lines)} configs")
+        else:
+            print("❌ Failed")
+    
+    print(f"\n📊 Total configs downloaded: {len(all_configs)}")
+    
+    # Step 2: Deduplicate based on server:port
+    print("\n🔍 Deduplicating...")
+    seen_servers = {}
+    unique_configs = []
+    
+    for config in all_configs:
+        server_port = extract_server_port(config)
+        if server_port not in seen_servers:
+            seen_servers[server_port] = config
+            unique_configs.append(config)
+    
+    print(f"✅ Unique configs after deduplication: {len(unique_configs)}")
+    print(f"🗑️  Duplicates removed: {len(all_configs) - len(unique_configs)}")
+    
+    # Step 3: Rename configs
+    print("\n✏️  Renaming configs...")
+    renamed_configs = []
+    renamed_count = 0
+    
+    for config in unique_configs:
+        renamed = rename_config(config)
+        if renamed != config:
+            renamed_count += 1
+        renamed_configs.append(renamed)
+    
+    print(f"✅ Configs renamed: {renamed_count}")
+    
+    # Step 4: Find oldest output file
+    print("\n📁 Determining output file...")
+    output_file = get_oldest_output_file()
+    
+    # Step 5: Write to file
+    print(f"\n💾 Writing {len(renamed_configs)} configs to '{output_file}'...")
+    
+    with open(output_file, 'w', encoding='utf-8') as f:
+        f.write('\n'.join(renamed_configs))
+    
+    print(f"✅ Successfully written to '{output_file}'")
+    
+    # Summary
+    print("\n" + "="*60)
+    print("📊 SUMMARY")
+    print("="*60)
+    print(f"Total Downloaded:     {len(all_configs)}")
+    print(f"After Deduplication:  {len(unique_configs)}")
+    print(f"Configs Renamed:      {renamed_count}")
+    print(f"Output File:          {output_file}")
+    print(f"Final Count:          {len(renamed_configs)}")
+    print("="*60)
+    print("✅ Process completed successfully!")
+
+if __name__ == "__main__":
+    main()
