@@ -15,6 +15,7 @@ SOURCES = [
 ]
 
 OUTPUT_FILES = ['Pre-Hugs-1.txt', 'Pre-Hugs-2.txt', 'Pre-Hugs-3.txt', 'Pre-Hugs-4.txt']
+COUNTER_FILE = '.rotation_counter'
 
 def download_file(url):
     """Download content from URL."""
@@ -114,43 +115,48 @@ def rename_config(config_line):
         new_name = "🔓 Support 👉 @MoboNetPC 🔓"
         return f"{protocol_part}#{quote(new_name, safe='')}"
     
-    # Pattern 3: Flag emoji + @VPNProxyTest + Flag emoji → Flag + پشتیبانی 👉 @VPNProxyTestSupport + Flag
-    # Example: 🇹🇷 @VPNProxyTest 🇹🇷 → 🇹🇷 پشتیبانی 👉 @VPNProxyTestSupport 🇹🇷
+    # Pattern 3: Flag emoji + @VPNProxyTest + Flag emoji → Flag + پشتیبانی 👉 @VPNProxyTest + Flag
+    # Example: 🇹🇷 @VPNProxyTest 🇹🇷 → 🇹🇷 پشتیبانی 👉 @VPNProxyTest 🇹🇷
     pattern2_flag = re.match(r'^([\U0001F1E6-\U0001F1FF]{2})\s*@VPNProxyTest\s*([\U0001F1E6-\U0001F1FF]{2})$', name_part)
     if pattern2_flag:
         flag = pattern2_flag.group(1)
-        new_name = f"{flag} پشتیبانی 👉 @VPNProxyTestSupport {flag}"
+        new_name = f"{flag} پشتیبانی 👉 @VPNProxyTest {flag}"
         return f"{protocol_part}#{quote(new_name, safe='')}"
     
-    # Pattern 4: 🔓 @VPNProxyTest 🔓 → 🔓 پشتیبانی 👉 @VPNProxyTestSupport 🔓
+    # Pattern 4: 🔓 @VPNProxyTest 🔓 → 🔓 پشتیبانی 👉 @VPNProxyTest 🔓
     pattern2_lock = re.match(r'^🔓\s*@VPNProxyTest\s*🔓$', name_part)
     if pattern2_lock:
-        new_name = "🔓 پشتیبانی 👉 @VPNProxyTestSupport 🔓"
+        new_name = "🔓 پشتیبانی 👉 @VPNProxyTest 🔓"
         return f"{protocol_part}#{quote(new_name, safe='')}"
     
     # If no pattern matches, return original
     return config_line
 
-def get_oldest_output_file():
-    """Find the oldest Pre-Hugs file (or first non-existent one)."""
-    oldest_file = None
-    oldest_time = None
+def get_next_output_file():
+    """Get the next output file using rotation counter."""
+    # Read current counter
+    if os.path.exists(COUNTER_FILE):
+        try:
+            with open(COUNTER_FILE, 'r') as f:
+                counter = int(f.read().strip())
+        except:
+            counter = 0
+    else:
+        counter = 0
     
-    for filename in OUTPUT_FILES:
-        if not os.path.exists(filename):
-            # If file doesn't exist, use this one
-            print(f"📝 File '{filename}' doesn't exist. Using it.")
-            return filename
-        
-        # Get file modification time
-        mtime = os.path.getmtime(filename)
-        
-        if oldest_time is None or mtime < oldest_time:
-            oldest_time = mtime
-            oldest_file = filename
+    # Get current file
+    current_file = OUTPUT_FILES[counter]
     
-    print(f"🔄 Oldest file is '{oldest_file}'. Overwriting it.")
-    return oldest_file
+    # Increment counter for next time (wrap around after 4)
+    next_counter = (counter + 1) % 4
+    
+    # Save next counter
+    with open(COUNTER_FILE, 'w') as f:
+        f.write(str(next_counter))
+    
+    print(f"🔄 Using rotation slot {counter + 1}/4: '{current_file}'")
+    
+    return current_file
 
 def main():
     print("="*60)
@@ -216,9 +222,9 @@ def main():
     
     print(f"✅ Configs renamed: {renamed_count}")
     
-    # Step 4: Find oldest output file
+    # Step 4: Get next output file (with rotation)
     print("\n📁 Determining output file...")
-    output_file = get_oldest_output_file()
+    output_file = get_next_output_file()
     
     # Step 5: Write to file
     print(f"\n💾 Writing {len(renamed_configs)} configs to '{output_file}'...")
