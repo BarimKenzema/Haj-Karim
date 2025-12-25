@@ -1,5 +1,5 @@
 # FILE: main.py (for your GitHub scraper repo)
-# VERSION 42.1: Historical Databases + Accumulating Active Files (cap 1111)
+# VERSION 43.0: Split Database Files at 44MB
 
 import os, json, re, base64, time, traceback, socket, ipaddress
 import requests
@@ -8,7 +8,7 @@ import concurrent.futures
 import geoip2.database
 from dns import resolver
 
-print("--- GITHUB COLLECTOR v42.1 (Databases + Accumulating Active Files) START ---")
+print("--- GITHUB COLLECTOR v43.0 (Split Databases at 44MB) START ---")
 
 # --- CONFIGURATION ---
 CONFIG_CHUNK_SIZE = 44444
@@ -16,12 +16,13 @@ MAX_PREFILTER_WORKERS = 100
 COLLECTOR_TOKEN = os.environ.get('COLLECTOR_TOKEN')
 VALIDATED_LINKS_FILE = 'validated_subscriptions.json'
 
-# NEW: Database and active file limits
-DATABASE_SNI = 'database_sni.txt'
-DATABASE_IP = 'database_ip.txt'
-ACTIVE_FILE_SNI = 'filtered-for-refiner.txt'  # SNI-as-address active file
-ACTIVE_FILE_IP = 'latest_ip_configs.txt'      # IP active file
+# Database configuration
+DATABASE_SNI_BASE = 'database_sni'
+DATABASE_IP_BASE = 'database_ip'
+ACTIVE_FILE_SNI = 'filtered-for-refiner.txt'
+ACTIVE_FILE_IP = 'latest_ip_configs.txt'
 MAX_ACTIVE_CONFIGS = 4444
+MAX_DB_SIZE_MB = 44  # Split databases when they exceed this size
 
 # --- SHARED CACHING & GLOBALS ---
 dns_cache = {}
@@ -66,9 +67,36 @@ COUNTRY_FLAGS = {
 }
 
 # =========================
-# Database helpers (base64)
+# NEW: Multi-file Database System
 # =========================
+
+def get_database_files(base_name):
+    """Get all database files for a base name (e.g., 'database_ip')"""
+    files = []
+    # Check base file
+    base_file = f"{base_name}.txt"
+    if os.path.exists(base_file):
+        files.append(base_file)
+    # Check numbered files
+    i = 2
+    while True:
+        numbered_file = f"{base_name}_{i}.txt"
+        if os.path.exists(numbered_file):
+            files.append(numbered_file)
+            i += 1
+        else:
+            break
+    return files
+
+def get_current_database_file(base_name):
+    """Get the current active database file (latest one to write to)"""
+    files = get_database_files(base_name)
+    if not files:
+        return f"{base_name}.txt"
+    return files[-1]  # Last one is the latest
+
 def load_database(db_file):
+    """Load a single database file (base64 encoded)"""
     if not os.path.exists(db_file):
         return set()
     try:
@@ -82,7 +110,26 @@ def load_database(db_file):
         print(f"Warning: Could not load {db_file}: {e}")
         return set()
 
+def load_all_databases(base_name):
+    """Load configs from ALL database files (base + numbered)"""
+    all_configs = set()
+    files = get_database_files(base_name)
+    
+    if not files:
+        print(f"  No database files found for {base_name}")
+        return all_configs
+    
+    print(f"  Loading from {len(files)} database file(s):")
+    for db_file in files:
+        configs = load_database(db_file)
+        all_configs.update(configs)
+        size_mb = os.path.getsize(db_file) / (1024 * 1024) if os.path.exists(db_file) else 0
+        print(f"    • {db_file}: {len(configs)} configs ({size_mb:.2f} MB)")
+    
+    return all_configs
+
 def save_database(db_file, configs_set):
+    """Save configs to a single database file (base64 encoded)"""
     try:
         content = "\n".join(sorted(configs_set))
         encoded = base64.b64encode(content.encode('utf-8')).decode('utf-8')
@@ -91,7 +138,58 @@ def save_database(db_file, configs_set):
     except Exception as e:
         print(f"Error saving {db_file}: {e}")
 
+def save_database_smart(base_name, new_configs_list):
+    """
+    Smart save: Add new configs to current DB file.
+    If it would exceed MAX_DB_SIZE_MB, create new numbered file.
+    Returns the filename that was written to.
+    """
+    if not new_configs_list:
+        return None
+    
+    current_file = get_current_database_file(base_name)
+    
+    # Load existing configs from current file only
+    existing = load_database(current_file) if os.path.exists(current_file) else set()
+    
+    # Combine with new configs
+    combined = existing.union(set(new_configs_list))
+    
+    # Calculate what the size would be
+    test_content = "\n".join(sorted(combined))
+    test_encoded = base64.b64encode(test_content.encode('utf-8')).decode('utf-8')
+    test_size_mb = len(test_encoded.encode('utf-8')) / (1024 * 1024)
+    
+    # If would exceed limit AND we have existing data, create new file
+    if test_size_mb > MAX_DB_SIZE_MB and existing:
+        # Determine next file number
+        if "_" in current_file:
+            # Extract number from current file (e.g., database_ip_2.txt -> 2)
+            base_part = current_file.rsplit("_", 1)[0]
+            num_part = current_file.rsplit("_", 1)[1].replace(".txt", "")
+            try:
+                current_num = int(num_part)
+                next_file = f"{base_part}_{current_num + 1}.txt"
+            except:
+                next_file = f"{base_name}_2.txt"
+        else:
+            # First split: base.txt -> base_2.txt
+            next_file = f"{base_name}_2.txt"
+        
+        print(f"  ⚠️ {current_file} would be {test_size_mb:.2f}MB (limit: {MAX_DB_SIZE_MB}MB)")
+        print(f"  ✅ Creating new database file: {next_file}")
+        
+        # Save ONLY new configs to new file
+        save_database(next_file, set(new_configs_list))
+        return next_file
+    else:
+        # Save combined to current file
+        save_database(current_file, combined)
+        print(f"  ✅ Updated {current_file} ({test_size_mb:.2f}MB, {len(combined)} total configs)")
+        return current_file
+
 def save_active_file(filepath, configs_list):
+    """Save active file (base64 encoded, capped at MAX_ACTIVE_CONFIGS)"""
     try:
         configs_to_save = configs_list[-MAX_ACTIVE_CONFIGS:] if len(configs_list) > MAX_ACTIVE_CONFIGS else configs_list
         content = "\n".join(configs_to_save)
@@ -104,6 +202,7 @@ def save_active_file(filepath, configs_list):
         return 0
 
 def load_list_from_file(filepath):
+    """Load a list from base64 encoded file"""
     if not os.path.exists(filepath): 
         return []
     try:
@@ -746,8 +845,8 @@ def main():
     print(f"  SNI DATABASE PROCESSING")
     print(f"{'='*70}")
     
-    db_sni = load_database(DATABASE_SNI)
-    print(f"Loaded {len(db_sni)} historical SNI configs from database")
+    db_sni_all = load_all_databases(DATABASE_SNI_BASE)
+    print(f"Total historical SNI configs across all databases: {len(db_sni_all)}")
     
     # Build SNI-based configs (SNI/host as address) and rename
     sni_configs_in_order = []
@@ -759,47 +858,45 @@ def main():
         else:
             sni_configs_in_order.append(sni_cfg)
     
-    # New vs DB (string-level)
-    sni_new = [c for c in sni_configs_in_order if c not in db_sni]
+    # New vs ALL DBs (string-level)
+    sni_new = [c for c in sni_configs_in_order if c not in db_sni_all]
     print(f"Found {len(sni_new)} NEW SNI configs")
+    
     if sni_new:
-        db_sni.update(sni_new)
-        save_database(DATABASE_SNI, db_sni)
-        print(f"✓ Updated {DATABASE_SNI} (now {len(db_sni)} total)")
+        saved_to = save_database_smart(DATABASE_SNI_BASE, sni_new)
         
         # Accumulate Active SNI
         existing_active_sni = load_list_from_file(ACTIVE_FILE_SNI) or []
         active_sni_merged = merge_active_by_fingerprint(existing_active_sni, sni_new)
         saved_count = save_active_file(ACTIVE_FILE_SNI, active_sni_merged)
-        print(f"✓ Saved {saved_count} to {ACTIVE_FILE_SNI} (accumulated)")
+        print(f"  ✅ Saved {saved_count} to {ACTIVE_FILE_SNI} (accumulated)")
     else:
-        print("No new SNI configs to add this run (active file left unchanged)")
+        print("  ℹ️ No new SNI configs this run (active file unchanged)")
     
     # === IP DATABASE PROCESSING ===
     print(f"\n{'='*70}")
     print(f"  IP DATABASE PROCESSING")
     print(f"{'='*70}")
     
-    db_ip = load_database(DATABASE_IP)
-    print(f"Loaded {len(db_ip)} historical IP configs from database")
+    db_ip_all = load_all_databases(DATABASE_IP_BASE)
+    print(f"Total historical IP configs across all databases: {len(db_ip_all)}")
     
     processed = process_and_convert_configs(live_configs)
     ip_configs_in_order = [item['config'] for item in processed]
     
-    ip_new = [c for c in ip_configs_in_order if c not in db_ip]
+    ip_new = [c for c in ip_configs_in_order if c not in db_ip_all]
     print(f"Found {len(ip_new)} NEW IP configs")
+    
     if ip_new:
-        db_ip.update(ip_new)
-        save_database(DATABASE_IP, db_ip)
-        print(f"✓ Updated {DATABASE_IP} (now {len(db_ip)} total)")
+        saved_to = save_database_smart(DATABASE_IP_BASE, ip_new)
         
         # Accumulate Active IP
         existing_active_ip = load_list_from_file(ACTIVE_FILE_IP) or []
         active_ip_merged = merge_active_by_fingerprint(existing_active_ip, ip_new)
         saved_count = save_active_file(ACTIVE_FILE_IP, active_ip_merged)
-        print(f"✓ Saved {saved_count} to {ACTIVE_FILE_IP} (accumulated)")
+        print(f"  ✅ Saved {saved_count} to {ACTIVE_FILE_IP} (accumulated)")
     else:
-        print("No new IP configs to add this run (active file left unchanged)")
+        print("  ℹ️ No new IP configs this run (active file unchanged)")
     
     # === CATEGORIZATION (using ALL processed configs) ===
     print(f"\n{'='*70}")
@@ -832,10 +929,12 @@ def main():
     print(f"{'='*70}")
     print(f"  Raw collected          : {len(all_raw_configs)}")
     print(f"  Live filtered          : {len(live_configs)}")
-    print(f"  SNI DB total           : {len(db_sni)}")
-    print(f"  IP  DB total           : {len(db_ip)}")
+    print(f"  SNI DB total (all)     : {len(db_sni_all)}")
+    print(f"  IP  DB total (all)     : {len(db_ip_all)}")
     print(f"  Active SNI (current)   : {len(load_list_from_file(ACTIVE_FILE_SNI))}")
     print(f"  Active IP (current)    : {len(load_list_from_file(ACTIVE_FILE_IP))}")
+    print(f"  SNI DB files           : {', '.join(get_database_files(DATABASE_SNI_BASE))}")
+    print(f"  IP  DB files           : {', '.join(get_database_files(DATABASE_IP_BASE))}")
     print(f"  Protocol groups        : {len(by_protocol)}")
     print(f"  Network groups         : {len(by_network)}")
     print(f"  Security groups        : {len(by_security)}")
