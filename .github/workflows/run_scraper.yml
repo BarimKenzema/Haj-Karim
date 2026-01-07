@@ -5,7 +5,7 @@ name: Run V2Ray Collector (Linux)
 
 on:
   schedule:
-    - cron: '*/444 * * * *' # Your original schedule
+    - cron: '*/99 * * * *' # Your original schedule
   workflow_dispatch:
 
 jobs:
