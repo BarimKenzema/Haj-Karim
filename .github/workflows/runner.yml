@@ -1,0 +1,74 @@
+name: Run V2Ray Collector (Linux)
+
+on:
+  schedule:
+    - cron: '*/99 * * * *'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    timeout-minutes: 180
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Full history for proper rebasing
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install Python Dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run Python script
+        env:
+          COLLECTOR_TOKEN: ${{ secrets.COLLECTOR_TOKEN }}
+        run: python main.py
+        continue-on-error: true  # Don't fail entire workflow if script has minor errors
+
+      # === FIX: Pull before committing to avoid conflicts ===
+      - name: Configure Git
+        run: |
+          git config --global user.name 'github-actions[bot]'
+          git config --global user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git config pull.rebase true
+
+      - name: Pull latest changes
+        run: |
+          git fetch origin main
+          git rebase origin/main || {
+            echo "Rebase conflict detected, attempting auto-resolution..."
+            git rebase --abort
+            git reset --hard origin/main
+            git pull origin main
+          }
+        continue-on-error: true
+
+      - name: Commit and push changes
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "✅ Automated Config Update (Linux)"
+          file_pattern: .
+          pull_options: '--rebase --autostash'
+          push_options: '--force-with-lease'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # === FALLBACK: Manual push if auto-commit fails ===
+      - name: Manual push (fallback)
+        if: failure()
+        run: |
+          git add .
+          git commit -m "✅ Automated Config Update (Linux) [fallback]" || echo "No changes to commit"
+          git push origin main --force-with-lease || {
+            git pull --rebase origin main
+            git push origin main --force-with-lease
+          }
+        continue-on-error: true
