@@ -1,0 +1,36 @@
+# ============================================
+# Git Attributes Configuration
+# Purpose: Prevent merge conflicts in database files
+# ============================================
+
+# --------------------------------------------
+# Database Files - Treat as Binary
+# --------------------------------------------
+# These files contain base64-encoded data
+# Git should NOT try to merge them (prevents corruption)
+
+*.txt binary
+database_*.txt binary
+database_sni*.txt binary
+database_ip*.txt binary
+filtered-for-refiner.txt binary
+latest_ip_configs.txt binary
+
+# --------------------------------------------
+# Source Code - Text Files with LF Line Endings
+# --------------------------------------------
+# Ensures consistent line endings across platforms
+
+*.py text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.json text eol=lf
+*.md text eol=lf
+*.sh text eol=lf
+
+# --------------------------------------------
+# Special Files
+# --------------------------------------------
+.gitignore text eol=lf
+.gitattributes text eol=lf
+requirements.txt text eol=lf
