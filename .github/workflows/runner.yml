@@ -1,8 +1,8 @@
-name: Run V2Ray Collector (Linux)
+name: Run V2Ray Collector
 
 on:
   schedule:
-    - cron: '0 */2 * * *'  # Every 2 hours at minute 0
+    - cron: '0 */2 * * *'  # Every 2 hours (as you requested)
   workflow_dispatch:
 
 jobs:
@@ -13,10 +13,11 @@ jobs:
     timeout-minutes: 180
 
     steps:
-      - name: Check out repository
+      - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0
+          fetch-depth: 1
+          ref: main
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -24,49 +25,75 @@ jobs:
           python-version: '3.11'
           cache: 'pip'
 
-      - name: Install Python Dependencies
+      - name: Install Python dependencies
         run: pip install -r requirements.txt
 
-      - name: Run Python script
+      - name: Run collector script
         env:
           COLLECTOR_TOKEN: ${{ secrets.COLLECTOR_TOKEN }}
         run: python main.py
-        continue-on-error: true
+        continue-on-error: false
 
       - name: Configure Git
         run: |
           git config --global user.name 'github-actions[bot]'
           git config --global user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git config pull.rebase true
-
-      - name: Pull latest changes
-        run: |
-          git fetch origin main
-          git rebase origin/main || {
-            echo "Rebase conflict detected, attempting auto-resolution..."
-            git rebase --abort
-            git reset --hard origin/main
-            git pull origin main
-          }
-        continue-on-error: true
 
       - name: Commit and push changes
-        uses: stefanzweifel/git-auto-commit-action@v5
-        with:
-          commit_message: "✅ Automated Config Update (Linux)"
-          file_pattern: .
-          pull_options: '--rebase --autostash'
-          push_options: '--force-with-lease'
+        run: |
+          # Fetch latest remote state
+          git fetch origin main
+          
+          # Reset to match remote (discards local history divergence)
+          git reset --soft origin/main
+          
+          # Stage all changes from the script
+          git add -A
+          
+          # Check if there are actually changes to commit
+          if git diff --cached --quiet; then
+            echo "ℹ️ No changes to commit"
+            exit 0
+          fi
+          
+          # Commit with timestamp
+          TIMESTAMP=$(date -u +'%Y-%m-%d %H:%M UTC')
+          git commit -m "✅ Automated Update ${TIMESTAMP}"
+          
+          # Push with retry logic (3 attempts)
+          for attempt in {1..3}; do
+            echo "Push attempt ${attempt}/3..."
+            
+            if git push origin main --force-with-lease; then
+              echo "✅ Push successful!"
+              exit 0
+            else
+              echo "⚠️ Push failed, waiting 10 seconds..."
+              sleep 10
+              
+              # Re-sync before retry
+              git fetch origin main
+              git rebase origin/main || {
+                echo "Rebase failed, resetting..."
+                git rebase --abort
+                git reset --soft origin/main
+                git add -A
+                git commit -m "✅ Automated Update ${TIMESTAMP} [retry ${attempt}]"
+              }
+            fi
+          done
+          
+          echo "❌ Failed to push after 3 attempts"
+          exit 1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Manual push (fallback)
+      - name: Upload logs on failure
         if: failure()
-        run: |
-          git add .
-          git commit -m "✅ Automated Config Update (Linux) [fallback]" || echo "No changes to commit"
-          git push origin main --force-with-lease || {
-            git pull --rebase origin main
-            git push origin main --force-with-lease
-          }
-        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: failure-logs
+          path: |
+            *.log
+            *.txt
+          retention-days: 7
