@@ -2,7 +2,7 @@ name: Run V2Ray Collector (Linux)
 
 on:
   schedule:
-    - cron: '*/99 * * * *'
+    - cron: '0 */2 * * *'  # Every 2 hours at minute 0
   workflow_dispatch:
 
 jobs:
@@ -16,7 +16,7 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0  # Full history for proper rebasing
+          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -31,9 +31,8 @@ jobs:
         env:
           COLLECTOR_TOKEN: ${{ secrets.COLLECTOR_TOKEN }}
         run: python main.py
-        continue-on-error: true  # Don't fail entire workflow if script has minor errors
+        continue-on-error: true
 
-      # === FIX: Pull before committing to avoid conflicts ===
       - name: Configure Git
         run: |
           git config --global user.name 'github-actions[bot]'
@@ -61,7 +60,6 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      # === FALLBACK: Manual push if auto-commit fails ===
       - name: Manual push (fallback)
         if: failure()
         run: |
