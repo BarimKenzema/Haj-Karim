@@ -22,8 +22,8 @@ DATABASE_IP_BASE = 'database_ip'
 ACTIVE_FILE_SNI = 'filtered-for-refiner.txt'
 ACTIVE_FILE_IP = 'latest_ip_configs.txt'
 MAX_ACTIVE_CONFIGS = 4444
-MAX_DB_SIZE_MB = 40  # Reduced from 44 to 40MB for safety
-MAX_DB_FILES_TO_KEEP = 3  # Keep 3 most recent database files
+MAX_DB_SIZE_MB = 44  # Reduced from 44 to 40MB for safety
+MAX_DB_FILES_TO_KEEP = 4  # Keep 4 most recent database files
 
 # --- SHARED CACHING & GLOBALS ---
 dns_cache = {}
