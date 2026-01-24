@@ -2,7 +2,7 @@ name: Run V2Ray Collector
 
 on:
   schedule:
-    - cron: '0 */2 * * *'  # Every 2 hours (as you requested)
+    - cron: '0 */2 * * *'  # Every 2 hours
   workflow_dispatch:
 
 jobs:
@@ -31,7 +31,8 @@ jobs:
       - name: Run collector script
         env:
           COLLECTOR_TOKEN: ${{ secrets.COLLECTOR_TOKEN }}
-        run: python main.py
+          PYTHONUNBUFFERED: "1"
+        run: python -u main.py
         continue-on-error: false
 
       - name: Configure Git
