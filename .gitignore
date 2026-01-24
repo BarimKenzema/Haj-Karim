@@ -1,0 +1,63 @@
+# ============================================
+# Python Generated Files
+# ============================================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+*.egg-info/
+dist/
+build/
+
+# ============================================
+# GeoIP Database (Downloaded Fresh Each Run)
+# ============================================
+geoip.mmdb
+*.mmdb
+
+# ============================================
+# Logs and Temporary Files
+# ============================================
+*.log
+*.tmp
+*.bak
+*.swp
+*.swo
+*~
+
+# ============================================
+# Operating System Files
+# ============================================
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ============================================
+# IDE and Editor Files
+# ============================================
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# ============================================
+# IMPORTANT: DO NOT IGNORE DATABASE FILES
+# These need to be tracked in Git
+# ============================================
+!database_*.txt
+!filtered-for-refiner.txt
+!latest_ip_configs.txt
+!validated_subscriptions.json
+
+# ============================================
+# Category folders ARE tracked
+# ============================================
+!countries/
+!protocols/
+!networks/
+!security/
+!splitted/
