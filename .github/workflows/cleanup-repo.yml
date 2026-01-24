@@ -1,0 +1,85 @@
+name: Emergency Cleanup (Run Once)
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type "CLEANUP" to confirm (this will force reset)'
+        required: true
+        default: ''
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    
+    steps:
+      - name: Validate confirmation
+        run: |
+          if [ "${{ github.event.inputs.confirm }}" != "CLEANUP" ]; then
+            echo "Error: Please type CLEANUP to confirm"
+            exit 1
+          fi
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure Git
+        run: |
+          git config --global user.name 'github-actions[bot]'
+          git config --global user.email '41898282+github-actions[bot]@users.noreply.github.com'
+
+      - name: Force sync with origin
+        run: |
+          echo "Fetching latest from origin..."
+          git fetch origin main
+          
+          echo "Resetting to origin/main..."
+          git reset --hard origin/main
+          
+          echo "Cleaning untracked files..."
+          git clean -fdx
+          
+          echo "Current status:"
+          git status
+
+      - name: Optional - Remove old database files
+        run: |
+          echo "Checking for database files..."
+          
+          # Keep only the 2 latest database files for each type
+          for base in "database_sni" "database_ip"; do
+            # Find all numbered files
+            files=$(ls ${base}_*.txt 2>/dev/null | sort -V || true)
+            count=$(echo "$files" | grep -c "^" || echo 0)
+            
+            if [ $count -gt 2 ]; then
+              echo "Found $count ${base} files, keeping latest 2"
+              to_delete=$(echo "$files" | head -n -2)
+              echo "Deleting: $to_delete"
+              echo "$to_delete" | xargs rm -f
+            fi
+          done
+          
+          git add -A
+          git diff --cached --quiet || git commit -m "🧹 Cleanup old database files"
+
+      - name: Push cleaned repository
+        run: |
+          git push origin main --force
+          echo "✅ Repository cleaned and synced successfully!"
+
+      - name: Summary
+        run: |
+          echo "==================================="
+          echo "Cleanup completed successfully!"
+          echo "==================================="
+          echo "Next steps:"
+          echo "1. Delete this workflow file (.github/workflows/cleanup-repo.yml)"
+          echo "2. Enable the main collector workflow"
+          echo "3. Monitor the next few runs"
+          echo "==================================="
