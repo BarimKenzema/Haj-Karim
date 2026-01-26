@@ -1,0 +1,81 @@
+name: Convert NPV Configs
+
+on:
+  workflow_dispatch:
+    inputs:
+      input_file:
+        description: 'Input file containing NPV JSONs'
+        required: false
+        default: 'npv_configs.txt'
+      clear_subscription:
+        description: 'Clear existing subscription before adding?'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
+
+jobs:
+  convert:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      
+      - name: Check if input file exists
+        run: |
+          if [ ! -f "${{ github.event.inputs.input_file }}" ]; then
+            echo "? File '${{ github.event.inputs.input_file }}' not found!"
+            exit 1
+          fi
+          echo "? Found input file: ${{ github.event.inputs.input_file }}"
+          echo "?? Contents:"
+          cat "${{ github.event.inputs.input_file }}"
+      
+      - name: Clear subscription if requested
+        if: ${{ github.event.inputs.clear_subscription == 'true' }}
+        run: |
+          echo "??? Clearing existing subscription..."
+          rm -f subscription.txt subscription_base64.txt
+          echo "? Cleared!"
+      
+      - name: Run converter script
+        run: |
+          python npv_converter.py
+        env:
+          INPUT_FILE: ${{ github.event.inputs.input_file }}
+      
+      - name: Show results
+        run: |
+          echo "?? Results:"
+          echo "==========="
+          if [ -f "subscription.txt" ]; then
+            echo "Configs in subscription.txt:"
+            wc -l subscription.txt
+            echo ""
+            cat subscription.txt
+          else
+            echo "No subscription.txt found"
+          fi
+      
+      - name: Commit and push changes
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          
+          git add subscription.txt subscription_base64.txt
+          
+          if git diff --staged --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "?? Updated subscription configs [$(date +'%Y-%m-%d %H:%M')]"
+            git push
+            echo "? Changes pushed!"
+          fi
