@@ -1,7 +1,8 @@
 import json
 import base64
 import os
-from urllib.parse import quote, unquote, parse_qs, urlparse
+import re
+from urllib.parse import quote
 
 def json_to_vless_uri(json_data):
     """Convert NPV JSON to vless:// URI"""
@@ -134,6 +135,77 @@ def convert_trojan(outbound, remarks):
     
     return uri
 
+# ==================== JSON EXTRACTION ====================
+
+def extract_json_objects(text):
+    """
+    Extract all JSON objects from text, regardless of formatting.
+    Handles:
+    - Single JSON
+    - Multiple JSONs on separate lines
+    - Multiple JSONs concatenated together
+    - Mixed formats
+    """
+    json_objects = []
+    text = text.strip()
+    
+    if not text:
+        return json_objects
+    
+    # Method 1: Try as single JSON first
+    try:
+        obj = json.loads(text)
+        if isinstance(obj, dict):
+            json_objects.append(text)
+            return json_objects
+    except:
+        pass
+    
+    # Method 2: Track braces to find individual JSON objects
+    depth = 0
+    start_index = None
+    in_string = False
+    escape_next = False
+    
+    for i, char in enumerate(text):
+        # Handle escape characters in strings
+        if escape_next:
+            escape_next = False
+            continue
+        
+        if char == '\\' and in_string:
+            escape_next = True
+            continue
+        
+        # Handle string boundaries
+        if char == '"' and not escape_next:
+            in_string = not in_string
+            continue
+        
+        # Skip if inside a string
+        if in_string:
+            continue
+        
+        # Track brace depth
+        if char == '{':
+            if depth == 0:
+                start_index = i
+            depth += 1
+        elif char == '}':
+            depth -= 1
+            if depth == 0 and start_index is not None:
+                # Found complete JSON object
+                json_str = text[start_index:i + 1]
+                try:
+                    # Validate it's proper JSON
+                    json.loads(json_str)
+                    json_objects.append(json_str)
+                except:
+                    pass
+                start_index = None
+    
+    return json_objects
+
 # ==================== DEDUPLICATION ====================
 
 def extract_config_fingerprint(uri):
@@ -223,32 +295,28 @@ def convert_from_file(input_file):
     print(f"📖 Reading from: {input_file}")
     
     with open(input_file, 'r', encoding='utf-8') as f:
-        content = f.read().strip()
+        content = f.read()
     
+    # Remove comment lines
+    lines = content.split('\n')
+    filtered_lines = [line for line in lines if not line.strip().startswith('#')]
+    content = '\n'.join(filtered_lines)
+    
+    # Extract all JSON objects
+    print(f"🔍 Extracting JSON objects...")
+    json_objects = extract_json_objects(content)
+    print(f"📦 Found {len(json_objects)} JSON object(s)")
+    
+    # Convert each JSON to URI
     configs = []
-    
-    # Try as single JSON first
-    try:
-        uri = json_to_vless_uri(content)
-        if uri:
-            configs.append(uri)
-            print(f"✅ Converted 1 config")
-            return configs
-    except:
-        pass
-    
-    # Try as multiple JSONs (one per line)
-    for line_num, line in enumerate(content.split('\n'), 1):
-        line = line.strip()
-        if not line or line.startswith('#'):
-            continue
+    for i, json_str in enumerate(json_objects, 1):
         try:
-            uri = json_to_vless_uri(line)
+            uri = json_to_vless_uri(json_str)
             if uri:
                 configs.append(uri)
-                print(f"✅ Line {line_num} converted")
+                print(f"✅ Config {i} converted")
         except Exception as e:
-            print(f"❌ Line {line_num} failed: {e}")
+            print(f"❌ Config {i} failed: {e}")
     
     return configs
 
@@ -276,7 +344,8 @@ def save_configs(configs, output_file='subscription.txt', append=True):
 
 if __name__ == "__main__":
     print("=" * 60)
-    print("NPV JSON to V2Ray URI Converter (with Deduplication)")
+    print("NPV JSON to V2Ray URI Converter")
+    print("(with Deduplication + Smart JSON Detection)")
     print("=" * 60)
     
     # Support environment variable for GitHub Actions
@@ -288,12 +357,17 @@ if __name__ == "__main__":
         print("\n📝 Instructions:")
         print("1. Create a file called 'npv_configs.txt'")
         print("2. Paste your NPV JSON(s) into it")
-        print("3. One JSON per line, lines with # are ignored")
-        print("4. Run this script again")
+        print("3. You can paste in ANY format:")
+        print("   - One JSON per line")
+        print("   - Multiple JSONs on same line")
+        print("   - All JSONs concatenated together")
+        print("   - Mixed formats")
+        print("4. Lines starting with # are ignored")
+        print("5. Run this script again")
         
         with open(input_file, 'w', encoding='utf-8') as f:
             f.write("# Paste your NPV JSON exports here\n")
-            f.write("# One JSON per line\n")
+            f.write("# Any format works - just paste everything!\n")
         print(f"\n✅ Created example file: {input_file}")
     else:
         print(f"\n🔍 Checking for existing configs in {output_file}...")
@@ -308,7 +382,7 @@ if __name__ == "__main__":
             unique_configs, duplicates = deduplicate_configs(new_configs, existing_fingerprints)
             
             print(f"\n📊 Results:")
-            print(f"   • New configs converted: {len(new_configs)}")
+            print(f"   • JSON objects found: {len(new_configs)}")
             print(f"   • Duplicates found: {duplicates}")
             print(f"   • Unique configs to add: {len(unique_configs)}")
             
@@ -324,3 +398,5 @@ if __name__ == "__main__":
                 print("\n⚠️  No new unique configs to add (all were duplicates)")
         else:
             print("\n❌ No valid configs found!")
+        
+        print("\n💡 TIP: Clear npv_configs.txt and paste more configs anytime")
