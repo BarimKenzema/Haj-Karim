@@ -24,7 +24,7 @@ def json_to_vless_uri(json_data):
 def convert_vless(outbound, remarks):
     server = outbound['settings']['vnext'][0]
     user = server['users'][0]
-    stream = outbound['streamSettings']
+    stream = outbound.get('streamSettings', {})
     
     uuid = user['id']
     address = server['address']
@@ -33,42 +33,131 @@ def convert_vless(outbound, remarks):
     params = []
     params.append(f"encryption={user.get('encryption', 'none')}")
     
+    # Flow (optional)
     if user.get('flow'):
         params.append(f"flow={user['flow']}")
     
-    params.append(f"security={stream.get('security', 'none')}")
-    params.append(f"type={stream.get('network', 'tcp')}")
+    # Security
+    security = stream.get('security', 'none')
+    params.append(f"security={security}")
     
-    if stream.get('security') == 'reality':
-        reality = stream['realitySettings']
-        params.append(f"sni={reality['serverName']}")
-        params.append(f"fp={reality['fingerprint']}")
-        params.append(f"pbk={reality['publicKey']}")
-        params.append(f"sid={reality['shortId']}")
+    # Network type
+    network = stream.get('network', 'tcp')
+    params.append(f"type={network}")
     
-    elif stream.get('security') == 'tls':
+    # Reality settings (all optional)
+    if security == 'reality':
+        reality = stream.get('realitySettings', {})
+        
+        # serverName/SNI (optional but common)
+        if reality.get('serverName'):
+            params.append(f"sni={reality['serverName']}")
+        
+        # fingerprint (optional)
+        if reality.get('fingerprint'):
+            params.append(f"fp={reality['fingerprint']}")
+        
+        # publicKey (required for reality, but handle gracefully)
+        if reality.get('publicKey'):
+            params.append(f"pbk={reality['publicKey']}")
+        
+        # shortId (OPTIONAL - this was causing the error!)
+        if reality.get('shortId'):
+            params.append(f"sid={reality['shortId']}")
+        # If no shortId, just don't add the parameter
+        
+        # spiderX (optional)
+        if reality.get('spiderX'):
+            params.append(f"spx={quote(reality['spiderX'])}")
+    
+    # TLS settings (all optional)
+    elif security == 'tls':
         tls = stream.get('tlsSettings', {})
+        
         if tls.get('serverName'):
             params.append(f"sni={tls['serverName']}")
+        
         if tls.get('fingerprint'):
             params.append(f"fp={tls['fingerprint']}")
+        
+        if tls.get('alpn'):
+            alpn = tls['alpn']
+            if isinstance(alpn, list):
+                alpn = ','.join(alpn)
+            params.append(f"alpn={quote(alpn)}")
+        
+        if tls.get('allowInsecure'):
+            params.append(f"allowInsecure=1")
     
-    if stream.get('network') == 'tcp':
+    # TCP settings
+    if network == 'tcp':
         tcp = stream.get('tcpSettings', {})
-        header_type = tcp.get('header', {}).get('type', 'none')
+        header = tcp.get('header', {})
+        header_type = header.get('type', 'none')
         params.append(f"headerType={header_type}")
+        
+        # HTTP header settings (for header type = http)
+        if header_type == 'http':
+            request = header.get('request', {})
+            if request.get('path'):
+                path = request['path']
+                if isinstance(path, list):
+                    path = path[0]
+                params.append(f"path={quote(path)}")
+            if request.get('headers', {}).get('Host'):
+                host = request['headers']['Host']
+                if isinstance(host, list):
+                    host = host[0]
+                params.append(f"host={host}")
     
-    elif stream.get('network') == 'ws':
+    # WebSocket settings
+    elif network == 'ws':
         ws = stream.get('wsSettings', {})
         if ws.get('path'):
             params.append(f"path={quote(ws['path'])}")
         if ws.get('host'):
             params.append(f"host={ws['host']}")
+        # Also check headers for host
+        headers = ws.get('headers', {})
+        if headers.get('Host') and not ws.get('host'):
+            params.append(f"host={headers['Host']}")
     
-    elif stream.get('network') == 'grpc':
+    # gRPC settings
+    elif network == 'grpc':
         grpc = stream.get('grpcSettings', {})
         if grpc.get('serviceName'):
             params.append(f"serviceName={quote(grpc['serviceName'])}")
+        if grpc.get('mode'):
+            params.append(f"mode={grpc['mode']}")
+    
+    # HTTP/2 settings
+    elif network in ['h2', 'http']:
+        h2 = stream.get('httpSettings', {})
+        if h2.get('path'):
+            params.append(f"path={quote(h2['path'])}")
+        if h2.get('host'):
+            host = h2['host']
+            if isinstance(host, list):
+                host = ','.join(host)
+            params.append(f"host={host}")
+    
+    # QUIC settings
+    elif network == 'quic':
+        quic = stream.get('quicSettings', {})
+        if quic.get('security'):
+            params.append(f"quicSecurity={quic['security']}")
+        if quic.get('key'):
+            params.append(f"key={quote(quic['key'])}")
+        if quic.get('header', {}).get('type'):
+            params.append(f"headerType={quic['header']['type']}")
+    
+    # KCP settings
+    elif network == 'kcp':
+        kcp = stream.get('kcpSettings', {})
+        if kcp.get('seed'):
+            params.append(f"seed={quote(kcp['seed'])}")
+        if kcp.get('header', {}).get('type'):
+            params.append(f"headerType={kcp['header']['type']}")
     
     param_str = "&".join(params)
     uri = f"vless://{uuid}@{address}:{port}?{param_str}#{quote(remarks)}"
@@ -78,7 +167,7 @@ def convert_vless(outbound, remarks):
 def convert_vmess(outbound, remarks):
     server = outbound['settings']['vnext'][0]
     user = server['users'][0]
-    stream = outbound['streamSettings']
+    stream = outbound.get('streamSettings', {})
     
     vmess_obj = {
         "v": "2",
@@ -91,22 +180,61 @@ def convert_vmess(outbound, remarks):
         "type": "none",
         "host": "",
         "path": "",
-        "tls": stream.get('security', 'none'),
+        "tls": stream.get('security', 'none') if stream.get('security') != 'reality' else 'tls',
         "sni": "",
         "alpn": ""
     }
     
-    if stream.get('network') == 'ws':
+    network = stream.get('network', 'tcp')
+    
+    # WebSocket
+    if network == 'ws':
         ws = stream.get('wsSettings', {})
         vmess_obj['path'] = ws.get('path', '')
         vmess_obj['host'] = ws.get('host', '')
-    elif stream.get('network') == 'grpc':
+        if not vmess_obj['host']:
+            vmess_obj['host'] = ws.get('headers', {}).get('Host', '')
+    
+    # gRPC
+    elif network == 'grpc':
         grpc = stream.get('grpcSettings', {})
         vmess_obj['path'] = grpc.get('serviceName', '')
     
-    if stream.get('security') == 'tls':
-        tls = stream.get('tlsSettings', {})
+    # HTTP/2
+    elif network in ['h2', 'http']:
+        h2 = stream.get('httpSettings', {})
+        vmess_obj['path'] = h2.get('path', '')
+        host = h2.get('host', [])
+        if isinstance(host, list) and host:
+            vmess_obj['host'] = host[0]
+        elif isinstance(host, str):
+            vmess_obj['host'] = host
+    
+    # TCP with HTTP header
+    elif network == 'tcp':
+        tcp = stream.get('tcpSettings', {})
+        header = tcp.get('header', {})
+        if header.get('type') == 'http':
+            vmess_obj['type'] = 'http'
+            request = header.get('request', {})
+            path = request.get('path', [])
+            if isinstance(path, list) and path:
+                vmess_obj['path'] = path[0]
+            host = request.get('headers', {}).get('Host', [])
+            if isinstance(host, list) and host:
+                vmess_obj['host'] = host[0]
+    
+    # TLS settings
+    security = stream.get('security', 'none')
+    if security in ['tls', 'reality']:
+        tls_key = 'tlsSettings' if security == 'tls' else 'realitySettings'
+        tls = stream.get(tls_key, {})
         vmess_obj['sni'] = tls.get('serverName', '')
+        alpn = tls.get('alpn', [])
+        if isinstance(alpn, list):
+            vmess_obj['alpn'] = ','.join(alpn)
+        elif isinstance(alpn, str):
+            vmess_obj['alpn'] = alpn
     
     json_str = json.dumps(vmess_obj, separators=(',', ':'))
     encoded = base64.b64encode(json_str.encode()).decode()
@@ -115,20 +243,60 @@ def convert_vmess(outbound, remarks):
 
 def convert_trojan(outbound, remarks):
     server = outbound['settings']['servers'][0]
-    stream = outbound['streamSettings']
+    stream = outbound.get('streamSettings', {})
     
     password = server['password']
     address = server['address']
     port = server['port']
     
     params = []
-    params.append(f"security={stream.get('security', 'tls')}")
-    params.append(f"type={stream.get('network', 'tcp')}")
     
-    if stream.get('security') == 'tls':
+    # Security
+    security = stream.get('security', 'tls')
+    params.append(f"security={security}")
+    
+    # Network type
+    network = stream.get('network', 'tcp')
+    params.append(f"type={network}")
+    
+    # TLS settings
+    if security == 'tls':
         tls = stream.get('tlsSettings', {})
         if tls.get('serverName'):
             params.append(f"sni={tls['serverName']}")
+        if tls.get('fingerprint'):
+            params.append(f"fp={tls['fingerprint']}")
+        if tls.get('alpn'):
+            alpn = tls['alpn']
+            if isinstance(alpn, list):
+                alpn = ','.join(alpn)
+            params.append(f"alpn={quote(alpn)}")
+    
+    # Reality settings
+    elif security == 'reality':
+        reality = stream.get('realitySettings', {})
+        if reality.get('serverName'):
+            params.append(f"sni={reality['serverName']}")
+        if reality.get('fingerprint'):
+            params.append(f"fp={reality['fingerprint']}")
+        if reality.get('publicKey'):
+            params.append(f"pbk={reality['publicKey']}")
+        if reality.get('shortId'):
+            params.append(f"sid={reality['shortId']}")
+    
+    # WebSocket
+    if network == 'ws':
+        ws = stream.get('wsSettings', {})
+        if ws.get('path'):
+            params.append(f"path={quote(ws['path'])}")
+        if ws.get('host'):
+            params.append(f"host={ws['host']}")
+    
+    # gRPC
+    elif network == 'grpc':
+        grpc = stream.get('grpcSettings', {})
+        if grpc.get('serviceName'):
+            params.append(f"serviceName={quote(grpc['serviceName'])}")
     
     param_str = "&".join(params)
     uri = f"trojan://{password}@{address}:{port}?{param_str}#{quote(remarks)}"
@@ -140,11 +308,6 @@ def convert_trojan(outbound, remarks):
 def extract_json_objects(text):
     """
     Extract all JSON objects from text, regardless of formatting.
-    Handles:
-    - Single JSON
-    - Multiple JSONs on separate lines
-    - Multiple JSONs concatenated together
-    - Mixed formats
     """
     json_objects = []
     text = text.strip()
@@ -168,7 +331,6 @@ def extract_json_objects(text):
     escape_next = False
     
     for i, char in enumerate(text):
-        # Handle escape characters in strings
         if escape_next:
             escape_next = False
             continue
@@ -177,16 +339,13 @@ def extract_json_objects(text):
             escape_next = True
             continue
         
-        # Handle string boundaries
         if char == '"' and not escape_next:
             in_string = not in_string
             continue
         
-        # Skip if inside a string
         if in_string:
             continue
         
-        # Track brace depth
         if char == '{':
             if depth == 0:
                 start_index = i
@@ -194,10 +353,8 @@ def extract_json_objects(text):
         elif char == '}':
             depth -= 1
             if depth == 0 and start_index is not None:
-                # Found complete JSON object
                 json_str = text[start_index:i + 1]
                 try:
-                    # Validate it's proper JSON
                     json.loads(json_str)
                     json_objects.append(json_str)
                 except:
