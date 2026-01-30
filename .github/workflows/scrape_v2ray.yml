@@ -12,6 +12,8 @@ jobs:
     steps:
     - name: Checkout repository
       uses: actions/checkout@v3
+      with:
+        fetch-depth: 0  # Fetch all history to avoid conflicts
       
     - name: Set up Python
       uses: actions/setup-python@v4
@@ -27,11 +29,35 @@ jobs:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       run: |
         python scraper.py
+    
+    - name: Upload artifact (always available to download)
+      uses: actions/upload-artifact@v3
+      if: always()  # Upload even if scraper fails
+      with:
+        name: v2ray-configs
+        path: found_configs.txt
+        retention-days: 30
         
-    - name: Commit results
+    - name: Commit and push results
       run: |
         git config --local user.email "action@github.com"
         git config --local user.name "GitHub Action"
         git add found_configs.txt
-        git diff --quiet && git diff --staged --quiet || git commit -m "Update V2Ray configs - $(date)"
-        git push
+        
+        # Check if there are changes
+        if git diff --staged --quiet; then
+          echo "No changes to commit"
+        else
+          # Pull latest changes first
+          git pull --rebase origin main || true
+          
+          # Commit changes
+          git commit -m "Update V2Ray configs - $(date '+%Y-%m-%d %H:%M:%S')"
+          
+          # Push with retry
+          git push || {
+            echo "First push failed, pulling and retrying..."
+            git pull --rebase origin main
+            git push
+          }
+        fi
