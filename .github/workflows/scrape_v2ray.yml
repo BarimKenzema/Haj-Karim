@@ -1,8 +1,8 @@
-name: Simple V2Ray Scraper
+name: V2Ray Scraper
 
 on:
   schedule:
-    - cron: '0 */12 * * *'  # Every 12 hours
+    - cron: '0 */12 * * *'
   workflow_dispatch:
   
 jobs:
@@ -18,15 +18,15 @@ jobs:
       with:
         python-version: '3.11'
         
-    - name: Install dependencies
+    - name: Install
       run: pip install requests
         
-    - name: Run scraper
+    - name: Scrape
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       run: python scraper.py
     
-    - name: Upload results
+    - name: Upload
       uses: actions/upload-artifact@v4
       if: always()
       with:
