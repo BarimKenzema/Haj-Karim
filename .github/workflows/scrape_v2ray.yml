@@ -1,63 +1,35 @@
-name: V2Ray Config Scraper
+name: Simple V2Ray Scraper
 
 on:
   schedule:
-    - cron: '0 */6 * * *'  # Run every 6 hours
-  workflow_dispatch:  # Allow manual trigger
+    - cron: '0 */12 * * *'  # Every 12 hours
+  workflow_dispatch:
   
 jobs:
   scrape:
     runs-on: ubuntu-latest
     
     steps:
-    - name: Checkout repository
-      uses: actions/checkout@v3
-      with:
-        fetch-depth: 0  # Fetch all history to avoid conflicts
+    - name: Checkout
+      uses: actions/checkout@v4
       
-    - name: Set up Python
-      uses: actions/setup-python@v4
+    - name: Setup Python
+      uses: actions/setup-python@v5
       with:
-        python-version: '3.10'
+        python-version: '3.11'
         
     - name: Install dependencies
-      run: |
-        pip install requests PyGithub
+      run: pip install requests
         
     - name: Run scraper
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      run: |
-        python scraper.py
+      run: python scraper.py
     
-    - name: Upload artifact (always available to download)
-      uses: actions/upload-artifact@v3
-      if: always()  # Upload even if scraper fails
+    - name: Upload results
+      uses: actions/upload-artifact@v4
+      if: always()
       with:
-        name: v2ray-configs
+        name: configs
         path: found_configs.txt
         retention-days: 30
-        
-    - name: Commit and push results
-      run: |
-        git config --local user.email "action@github.com"
-        git config --local user.name "GitHub Action"
-        git add found_configs.txt
-        
-        # Check if there are changes
-        if git diff --staged --quiet; then
-          echo "No changes to commit"
-        else
-          # Pull latest changes first
-          git pull --rebase origin main || true
-          
-          # Commit changes
-          git commit -m "Update V2Ray configs - $(date '+%Y-%m-%d %H:%M:%S')"
-          
-          # Push with retry
-          git push || {
-            echo "First push failed, pulling and retrying..."
-            git pull --rebase origin main
-            git push
-          }
-        fi
