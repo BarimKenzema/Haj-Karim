@@ -1,38 +1,93 @@
 #!/usr/bin/env python3
 """
-Simple V2Ray Config Scraper - FIXED
-Searches for V2Ray configs, then filters by IP range
+V2Ray Config Scraper - Original Version
+Only searches for 2 IP ranges: 5.199.172.x and 81.12.33.x
 """
 
 import requests
 import re
+import json
 import time
 import os
+from datetime import datetime
 
-# Target IP ranges
-TARGET_IPS = [
-    '5.199.172.',   # Cherry Servers
-    '81.12.33.'     # Iranian tunnel
-]
+# ============================================================================
+# CONFIGURATION
+# ============================================================================
 
 GITHUB_TOKEN = os.getenv('GITHUB_TOKEN')
 
-# Search for V2Ray-related keywords instead of IPs
-SEARCH_QUERIES = [
-    'vless:// extension:txt',
-    'vmess:// extension:txt',
-    '"protocol":"vless" extension:json',
-    '"protocol":"vmess" extension:json',
-    'trojan:// extension:txt',
-    'shadowsocks:// extension:txt',
+# Only 2 working IP ranges
+WORKING_RANGES = {
+    "cherry_servers": {
+        "ranges": ["5.199.0.0/16"],
+        "provider": "Cherry Servers (Lithuania)",
+        "sample_ips": ["5.199.172.73"]
+    },
+    "iranian_tunnel": {
+        "ranges": ["81.12.0.0/16"],
+        "provider": "Iranian Tunnel",
+        "sample_ips": ["81.12.33.0"]
+    }
+}
+
+# Search patterns (same as original)
+SEARCH_PATTERNS = [
+    'vless://',
+    'vmess://',
+    'trojan://',
+    'shadowsocks://',
+    '"protocol":"vless"',
+    '"protocol":"vmess"',
+    '"protocol":"shadowsocks"',
 ]
 
-def search_github(query):
-    """Search GitHub code"""
+OUTPUT_FILE = 'found_configs.txt'
+
+# ============================================================================
+# IP UTILITIES
+# ============================================================================
+
+def ip_in_range(ip, cidr_range):
+    """Check if IP is in CIDR range"""
+    import ipaddress
+    try:
+        return ipaddress.ip_address(ip) in ipaddress.ip_network(cidr_range)
+    except:
+        return False
+
+def extract_ips_from_text(text):
+    """Extract all IPs from text"""
+    pattern = r'\b(?:\d{1,3}\.){3}\d{1,3}\b'
+    ips = re.findall(pattern, text)
     
+    valid_ips = []
+    for ip in ips:
+        parts = ip.split('.')
+        if all(0 <= int(p) <= 255 for p in parts):
+            # Exclude local/DNS IPs
+            if not ip.startswith(('127.', '192.168.', '10.', '172.', '0.', '255.', '1.1.1.', '8.8.8.', '223.')):
+                valid_ips.append(ip)
+    
+    return valid_ips
+
+def is_ip_in_working_ranges(ip):
+    """Check if IP is in our 2 target ranges"""
+    for range_name, data in WORKING_RANGES.items():
+        for cidr in data['ranges']:
+            if ip_in_range(ip, cidr):
+                return True, range_name, data['provider']
+    return False, None, None
+
+# ============================================================================
+# GITHUB SEARCH
+# ============================================================================
+
+def search_github_code(query, max_results=100):
+    """Search GitHub code"""
     headers = {
-        'Authorization': f'token {GITHUB_TOKEN}',
-        'Accept': 'application/vnd.github.v3+json'
+        'Accept': 'application/vnd.github.v3+json',
+        'Authorization': f'token {GITHUB_TOKEN}'
     }
     
     url = 'https://api.github.com/search/code'
@@ -45,27 +100,26 @@ def search_github(query):
         response = requests.get(url, headers=headers, params=params, timeout=30)
         
         if response.status_code == 200:
-            return response.json().get('items', [])
+            data = response.json()
+            return data.get('items', [])
         elif response.status_code == 403:
-            print(f"   ⚠️ Rate limited, waiting...")
+            print(f"⚠️  Rate limited, waiting...")
             time.sleep(60)
             return []
         else:
             return []
-            
     except Exception as e:
         return []
 
-def get_file_content(url):
-    """Download file"""
-    
+def get_file_content(file_url):
+    """Download file content from GitHub"""
     headers = {
-        'Authorization': f'token {GITHUB_TOKEN}',
-        'Accept': 'application/vnd.github.v3.raw'
+        'Accept': 'application/vnd.github.v3.raw',
+        'Authorization': f'token {GITHUB_TOKEN}'
     }
     
     try:
-        response = requests.get(url, headers=headers, timeout=30)
+        response = requests.get(file_url, headers=headers, timeout=30)
         if response.status_code == 200:
             return response.text
     except:
@@ -73,141 +127,163 @@ def get_file_content(url):
     
     return None
 
-def contains_target_ip(text):
-    """Check if text contains any target IP"""
-    for ip_prefix in TARGET_IPS:
-        if ip_prefix in text:
-            return True
-    return False
+# ============================================================================
+# CONFIG EXTRACTION
+# ============================================================================
 
-def extract_configs_with_target_ip(text):
-    """Extract only configs containing target IPs"""
-    
+def extract_v2ray_configs(text):
+    """Extract V2Ray configs from text"""
     configs = []
     
-    # Check if file even contains our IPs
-    if not contains_target_ip(text):
-        return []
+    # URI format
+    uri_patterns = [
+        r'(vless://[^\s\n]+)',
+        r'(vmess://[^\s\n]+)',
+        r'(trojan://[^\s\n]+)',
+        r'(ss://[^\s\n]+)',
+    ]
     
-    # Extract configs line by line
-    for line in text.split('\n'):
-        line = line.strip()
-        
-        # Skip empty or comment lines
-        if not line or line.startswith('#'):
-            continue
-        
-        # Check if line contains target IP
-        has_target = False
-        for ip_prefix in TARGET_IPS:
-            if ip_prefix in line:
-                has_target = True
-                break
-        
-        if not has_target:
-            continue
-        
-        # Check if it's a config
-        if any(line.startswith(p) for p in ['vless://', 'vmess://', 'trojan://', 'ss://']):
-            configs.append(line)
-        elif '"address"' in line or '"vnext"' in line or '"servers"' in line:
-            # JSON config fragment
-            configs.append(line)
+    for pattern in uri_patterns:
+        matches = re.findall(pattern, text)
+        configs.extend(matches)
+    
+    # JSON configs
+    try:
+        json_pattern = r'\{[^}]*"protocol":\s*"(vless|vmess|shadowsocks|trojan)"[^}]*\}'
+        json_matches = re.findall(json_pattern, text, re.DOTALL)
+        for match in json_matches:
+            configs.append(match)
+    except:
+        pass
     
     return configs
 
-def main():
+# ============================================================================
+# MAIN SCRAPER
+# ============================================================================
+
+def scrape_configs():
+    """Main scraping function"""
     print("="*70)
-    print("Simple V2Ray Scraper - 2 IP Ranges")
+    print("V2Ray Config Scraper - 2 IP Ranges Only")
     print("="*70)
-    print(f"Target IPs: {TARGET_IPS}\n")
+    print(f"\n⏰ Started: {datetime.now()}\n")
     
-    all_configs = []
-    files_checked = 0
+    print("🎯 Target Ranges:")
+    for name, data in WORKING_RANGES.items():
+        print(f"   {data['provider']}: {data['ranges']}")
     
-    for query in SEARCH_QUERIES:
-        print(f"\n🔍 Searching: {query}")
+    all_found_configs = []
+    
+    # Search for each pattern
+    for pattern in SEARCH_PATTERNS:
+        print(f"\n🔎 Searching: '{pattern}'...")
         
-        files = search_github(query)
-        print(f"   Found {len(files)} files")
+        results = search_github_code(pattern, max_results=100)
+        print(f"   Found {len(results)} files")
         
-        for file_item in files:
-            files_checked += 1
+        for item in results:
+            file_url = item.get('url')
+            file_path = item.get('path')
+            repo_name = item.get('repository', {}).get('full_name')
             
-            file_url = file_item.get('url')
-            repo = file_item.get('repository', {}).get('full_name', 'unknown')
-            path = file_item.get('path', '')
+            print(f"   → Checking: {repo_name}/{file_path}")
             
-            # Download file
+            # Get file content
             content = get_file_content(file_url)
             if not content:
                 continue
             
-            # Check if it has our target IPs
-            if not contains_target_ip(content):
-                continue
+            # Extract IPs from content
+            ips_in_file = extract_ips_from_text(content)
             
-            # Extract matching configs
-            configs = extract_configs_with_target_ip(content)
+            # Check if any IP is in our target ranges
+            matching_ips = []
+            for ip in ips_in_file:
+                in_range, range_name, provider = is_ip_in_working_ranges(ip)
+                if in_range:
+                    matching_ips.append((ip, provider))
             
-            if configs:
-                print(f"   ✓ {repo}/{path} - {len(configs)} configs")
-                all_configs.extend(configs)
+            if matching_ips:
+                print(f"     ✅ MATCH! IPs: {[ip for ip, _ in matching_ips]}")
+                
+                # Extract configs
+                configs = extract_v2ray_configs(content)
+                
+                for config in configs:
+                    all_found_configs.append({
+                        'config': config,
+                        'ips': matching_ips,
+                        'source': f"{repo_name}/{file_path}",
+                        'found_at': datetime.now().isoformat()
+                    })
             
-            time.sleep(1)
+            time.sleep(1)  # Rate limiting
         
-        time.sleep(3)
+        time.sleep(5)  # Between searches
     
-    print(f"\n📊 Checked {files_checked} files")
+    return all_found_configs
+
+# ============================================================================
+# SAVE RESULTS
+# ============================================================================
+
+def save_results(configs):
+    """Save found configs to file"""
+    if not configs:
+        print("\n❌ No configs found in target ranges")
+        return
     
-    # Remove duplicates
-    unique_configs = list(set(all_configs))
+    print(f"\n✅ Found {len(configs)} configs in target ranges!")
     
-    print(f"💾 Found {len(unique_configs)} unique configs in target IP ranges")
-    
-    # Save
-    with open('found_configs.txt', 'w') as f:
-        f.write(f"# V2Ray Configs from Your Working IP Ranges\n")
-        f.write(f"# Total: {len(unique_configs)}\n")
-        f.write(f"# Ranges: 5.199.172.x (Cherry Servers), 81.12.33.x (Iranian tunnel)\n")
+    # Save to file
+    with open(OUTPUT_FILE, 'w', encoding='utf-8') as f:
+        f.write(f"# V2Ray Configs from Target IP Ranges\n")
+        f.write(f"# Generated: {datetime.now()}\n")
+        f.write(f"# Total: {len(configs)}\n")
+        f.write(f"#\n")
+        f.write(f"# Ranges:\n")
+        f.write(f"#   - Cherry Servers (5.199.x.x)\n")
+        f.write(f"#   - Iranian Tunnel (81.12.x.x)\n")
         f.write(f"#\n")
         f.write(f"# HOW TO USE:\n")
-        f.write(f"# 1. Copy a line below (starts with vless:// or vmess://)\n")
-        f.write(f"# 2. Open V2RayNG\n")
-        f.write(f"# 3. Tap + → Import from clipboard\n")
-        f.write(f"# 4. Test connection\n")
+        f.write(f"#   1. Copy a config line (starts with vless://, vmess://, etc.)\n")
+        f.write(f"#   2. Open V2RayNG app\n")
+        f.write(f"#   3. Tap + → Import from clipboard\n")
+        f.write(f"#   4. Test connection\n")
         f.write(f"#\n\n")
         
-        if unique_configs:
-            # Separate by IP range
-            cherry_configs = [c for c in unique_configs if '5.199.172.' in c]
-            iranian_configs = [c for c in unique_configs if '81.12.33.' in c]
-            
-            if cherry_configs:
-                f.write(f"# ========================================\n")
-                f.write(f"# Cherry Servers (5.199.172.x) - {len(cherry_configs)} configs\n")
-                f.write(f"# ========================================\n\n")
-                for config in cherry_configs:
-                    f.write(f"{config}\n")
-                f.write("\n")
-            
-            if iranian_configs:
-                f.write(f"# ========================================\n")
-                f.write(f"# Iranian Tunnel (81.12.33.x) - {len(iranian_configs)} configs\n")
-                f.write(f"# ========================================\n\n")
-                for config in iranian_configs:
-                    f.write(f"{config}\n")
-        else:
-            f.write("# No configs found this time. Try running again later.\n")
+        for i, item in enumerate(configs, 1):
+            f.write(f"# Config {i}\n")
+            f.write(f"# IPs: {item['ips']}\n")
+            f.write(f"# Source: {item['source']}\n")
+            f.write(f"{item['config']}\n\n")
     
-    print(f"✅ Saved to found_configs.txt")
+    print(f"\n💾 Saved to: {OUTPUT_FILE}")
     
-    if unique_configs:
-        print(f"\n🎯 Breakdown:")
-        print(f"   Cherry Servers: {len([c for c in unique_configs if '5.199.172.' in c])} configs")
-        print(f"   Iranian Tunnel: {len([c for c in unique_configs if '81.12.33.' in c])} configs")
+    # Print summary
+    print(f"\n📊 Summary by Provider:")
+    providers = {}
+    for item in configs:
+        for ip, provider in item['ips']:
+            providers[provider] = providers.get(provider, 0) + 1
     
-    print("="*70)
+    for provider, count in providers.items():
+        print(f"   {provider}: {count} configs")
+
+# ============================================================================
+# MAIN
+# ============================================================================
 
 if __name__ == "__main__":
-    main()
+    try:
+        configs = scrape_configs()
+        save_results(configs)
+        
+        print(f"\n⏰ Finished: {datetime.now()}")
+        print("="*70 + "\n")
+        
+    except Exception as e:
+        print(f"\n❌ Error: {e}")
+        import traceback
+        traceback.print_exc()
