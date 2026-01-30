@@ -1,0 +1,12 @@
+{
+  "cherry_servers_lithuania": {
+    "ranges": ["5.199.0.0/16"],
+    "provider": "Cherry Servers (Lithuania)",
+    "working_configs": ["5.199.172.73:8443"]
+  },
+  "ovh_france": {
+    "ranges": ["54.36.0.0/16"],
+    "provider": "OVH (France)",
+    "working_configs": ["54.36.174.140:443"]
+  }
+}
