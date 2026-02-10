@@ -12,27 +12,24 @@ import time
 import concurrent.futures
 import json
 import os
-from urllib.parse import urlparse, unquote
 
 # Configuration
-TIMEOUT = 5  # Connection timeout in seconds
-MAX_WORKERS = 100  # Concurrent connection tests
+TIMEOUT = 5
+MAX_WORKERS = 100
 
-# First group URLs (WebSocket configs)
-WS_URLS = [
+# CLOUDFLARE CONFIGS (First Group - Separate)
+CLOUDFLARE_URLS = [
     "https://raw.githubusercontent.com/BarimKenzema/Final-Boss/refs/heads/main/networks/ws.txt",
     "https://raw.githubusercontent.com/BarimKenzema/Haj-Karim/refs/heads/main/networks/w"
 ]
+CLOUDFLARE_OUTPUT = "output/cloudflare.txt"
 
-# Second group URLs (Reality/gRPC configs)
-REALITY_URLS = [
+# FREE CONFIGS (Second Group - Separate)
+FREE_URLS = [
     "https://raw.githubusercontent.com/BarimKenzema/Final-Boss/refs/heads/main/special/reality_tcp.txt",
     "https://raw.githubusercontent.com/BarimKenzema/Haj-Karim/refs/heads/main/networks/grpc"
 ]
-
-# Output files
-WS_OUTPUT = "output/ws_tested.txt"
-REALITY_OUTPUT = "output/reality_grpc_tested.txt"
+FREE_OUTPUT = "output/free.txt"
 
 
 def download_content(url):
@@ -52,7 +49,6 @@ def download_content(url):
 def decode_base64(content):
     """Try to decode base64 content"""
     try:
-        # Add padding if needed
         padding = 4 - len(content) % 4
         if padding != 4:
             content += '=' * padding
@@ -66,14 +62,12 @@ def parse_configs(content):
     """Parse configs from content (handles both base64 and plain text)"""
     configs = []
     
-    # First try to decode as base64
     decoded = decode_base64(content)
     if decoded and ('vmess://' in decoded or 'vless://' in decoded or 
                     'trojan://' in decoded or 'ss://' in decoded or
                     'hysteria' in decoded):
         content = decoded
     
-    # Split by newlines and filter valid configs
     lines = content.split('\n')
     for line in lines:
         line = line.strip()
@@ -91,11 +85,9 @@ def extract_server_info(config):
     config = config.strip()
     
     try:
-        # VMess: vmess://base64encoded
         if config.startswith('vmess://'):
             encoded = config[8:].split('#')[0]
             try:
-                # Add padding
                 padding = 4 - len(encoded) % 4
                 if padding != 4:
                     encoded += '=' * padding
@@ -107,19 +99,16 @@ def extract_server_info(config):
             except:
                 return None, None
         
-        # VLESS: vless://uuid@server:port?params#name
         elif config.startswith('vless://'):
             match = re.match(r'vless://[^@]+@\[?([^\]:\/?#]+)\]?:(\d+)', config)
             if match:
                 return match.group(1), int(match.group(2))
         
-        # Trojan: trojan://password@server:port?params#name
         elif config.startswith('trojan://'):
             match = re.match(r'trojan://[^@]+@\[?([^\]:\/?#]+)\]?:(\d+)', config)
             if match:
                 return match.group(1), int(match.group(2))
         
-        # Shadowsocks: ss://base64@server:port#name or ss://base64#name
         elif config.startswith('ss://'):
             content = config[5:]
             if '@' in content:
@@ -127,7 +116,6 @@ def extract_server_info(config):
                 if match:
                     return match.group(1), int(match.group(2))
             else:
-                # Fully encoded format
                 encoded = content.split('#')[0]
                 try:
                     padding = 4 - len(encoded) % 4
@@ -140,7 +128,6 @@ def extract_server_info(config):
                 except:
                     pass
         
-        # SSR: ssr://base64encoded
         elif config.startswith('ssr://'):
             encoded = config[6:].split('#')[0]
             try:
@@ -154,7 +141,6 @@ def extract_server_info(config):
             except:
                 pass
         
-        # Hysteria2: hysteria2://auth@server:port?params#name
         elif config.startswith('hysteria2://') or config.startswith('hy2://'):
             prefix_len = 12 if config.startswith('hysteria2://') else 5
             content = config[prefix_len:]
@@ -162,20 +148,18 @@ def extract_server_info(config):
             if match:
                 return match.group(1), int(match.group(2))
         
-        # Hysteria: hysteria://server:port?params#name
         elif config.startswith('hysteria://'):
             content = config[11:]
             match = re.match(r'\[?([^\]:\/?#]+)\]?:(\d+)', content)
             if match:
                 return match.group(1), int(match.group(2))
         
-        # TUIC: tuic://uuid:password@server:port?params#name
         elif config.startswith('tuic://'):
             match = re.match(r'tuic://[^@]+@\[?([^\]:\/?#]+)\]?:(\d+)', config)
             if match:
                 return match.group(1), int(match.group(2))
     
-    except Exception as e:
+    except Exception:
         pass
     
     return None, None
@@ -186,16 +170,14 @@ def test_connection(config, timeout=TIMEOUT):
     server, port = extract_server_info(config)
     
     if not server or not port:
-        return config, float('inf'), False, "Parse error"
+        return config, float('inf'), False
     
     try:
-        # Resolve hostname
         try:
             ip = socket.gethostbyname(server)
         except socket.gaierror:
-            return config, float('inf'), False, "DNS error"
+            return config, float('inf'), False
         
-        # Test TCP connection
         start_time = time.time()
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.settimeout(timeout)
@@ -204,15 +186,13 @@ def test_connection(config, timeout=TIMEOUT):
         sock.close()
         
         if result == 0:
-            latency = round((end_time - start_time) * 1000, 2)  # ms
-            return config, latency, True, "OK"
+            latency = round((end_time - start_time) * 1000, 2)
+            return config, latency, True
         else:
-            return config, float('inf'), False, f"Connection refused"
+            return config, float('inf'), False
     
-    except socket.timeout:
-        return config, float('inf'), False, "Timeout"
-    except Exception as e:
-        return config, float('inf'), False, str(e)
+    except:
+        return config, float('inf'), False
 
 
 def remove_duplicates(configs):
@@ -228,7 +208,6 @@ def remove_duplicates(configs):
                 seen[key] = True
                 unique.append(config)
         else:
-            # Keep configs we can't parse
             unique.append(config)
     
     return unique
@@ -239,14 +218,12 @@ def download_all_configs(urls):
     all_configs = []
     
     for url in urls:
-        print(f"[INFO] Downloading from: {url}")
+        print(f"[INFO] Downloading: {url}")
         content = download_content(url)
         if content:
             configs = parse_configs(content)
             all_configs.extend(configs)
             print(f"[INFO] Found {len(configs)} configs")
-        else:
-            print(f"[WARN] No content from {url}")
     
     return all_configs
 
@@ -257,7 +234,7 @@ def test_all_configs(configs, max_workers=MAX_WORKERS):
     total = len(configs)
     tested = 0
     
-    print(f"[INFO] Testing {total} configs with {max_workers} workers...")
+    print(f"[INFO] Testing {total} configs...")
     
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
         future_to_config = {executor.submit(test_connection, config): config 
@@ -265,21 +242,19 @@ def test_all_configs(configs, max_workers=MAX_WORKERS):
         
         for future in concurrent.futures.as_completed(future_to_config):
             tested += 1
-            config, latency, is_alive, status = future.result()
+            config, latency, is_alive = future.result()
             
             if is_alive:
                 alive_configs.append((config, latency))
             
-            # Progress update every 50 tests
             if tested % 50 == 0 or tested == total:
-                print(f"[INFO] Progress: {tested}/{total} tested, {len(alive_configs)} alive")
+                print(f"[INFO] Progress: {tested}/{total}, Alive: {len(alive_configs)}")
     
     return alive_configs
 
 
 def save_configs(configs, output_file):
-    """Save configs to file"""
-    # Create output directory if needed
+    """Save configs to file (subscription format - one per line)"""
     os.makedirs(os.path.dirname(output_file), exist_ok=True)
     
     with open(output_file, 'w', encoding='utf-8') as f:
@@ -295,57 +270,57 @@ def process_group(urls, output_file, group_name):
     print(f"Processing: {group_name}")
     print(f"{'='*60}")
     
-    # Download all configs
+    # Download
     configs = download_all_configs(urls)
-    print(f"[INFO] Total configs downloaded: {len(configs)}")
+    print(f"[INFO] Total downloaded: {len(configs)}")
     
     if not configs:
-        print(f"[WARN] No configs found for {group_name}")
-        return
-    
-    # Remove duplicates
-    unique_configs = remove_duplicates(configs)
-    print(f"[INFO] After removing duplicates: {len(unique_configs)}")
-    
-    # Test connections
-    alive_configs = test_all_configs(unique_configs)
-    print(f"[INFO] Alive configs: {len(alive_configs)}")
-    
-    if not alive_configs:
-        print(f"[WARN] No alive configs found for {group_name}")
-        # Create empty file
+        print(f"[WARN] No configs found!")
         os.makedirs(os.path.dirname(output_file), exist_ok=True)
         open(output_file, 'w').close()
         return
     
-    # Sort by latency (lowest first)
+    # Remove duplicates
+    unique_configs = remove_duplicates(configs)
+    print(f"[INFO] After deduplication: {len(unique_configs)}")
+    
+    # Test
+    alive_configs = test_all_configs(unique_configs)
+    print(f"[INFO] Alive: {len(alive_configs)}")
+    
+    if not alive_configs:
+        print(f"[WARN] No alive configs!")
+        os.makedirs(os.path.dirname(output_file), exist_ok=True)
+        open(output_file, 'w').close()
+        return
+    
+    # Sort by latency
     alive_configs.sort(key=lambda x: x[1])
     
-    # Save to file
+    # Save
     save_configs(alive_configs, output_file)
     
-    # Print top 5 fastest
-    print(f"\n[INFO] Top 5 fastest servers:")
+    # Show top 5
+    print(f"\n[INFO] Top 5 fastest:")
     for i, (config, latency) in enumerate(alive_configs[:5], 1):
         server, port = extract_server_info(config)
         print(f"  {i}. {server}:{port} - {latency}ms")
 
 
 def main():
-    """Main function"""
     print("="*60)
     print("Proxy Config Updater")
-    print(f"Started at: {time.strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"Time: {time.strftime('%Y-%m-%d %H:%M:%S UTC')}")
     print("="*60)
     
-    # Process WebSocket configs
-    process_group(WS_URLS, WS_OUTPUT, "WebSocket Configs")
+    # Process CLOUDFLARE configs (First Group)
+    process_group(CLOUDFLARE_URLS, CLOUDFLARE_OUTPUT, "CLOUDFLARE")
     
-    # Process Reality/gRPC configs
-    process_group(REALITY_URLS, REALITY_OUTPUT, "Reality/gRPC Configs")
+    # Process FREE configs (Second Group)
+    process_group(FREE_URLS, FREE_OUTPUT, "FREE")
     
     print(f"\n{'='*60}")
-    print(f"Completed at: {time.strftime('%Y-%m-%d %H:%M:%S')}")
+    print("DONE!")
     print("="*60)
 
 
