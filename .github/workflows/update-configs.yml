@@ -2,19 +2,8 @@ name: Update Proxy Configs
 
 on:
   schedule:
-    # Run every 4 hours
     - cron: '0 */4 * * *'
-  
-  # Allow manual trigger
   workflow_dispatch:
-
-  # Run on push to main (optional)
-  push:
-    branches:
-      - main
-    paths:
-      - 'update_configs.py'
-      - '.github/workflows/update-configs.yml'
 
 jobs:
   update-configs:
@@ -26,8 +15,6 @@ jobs:
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
       
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -35,27 +22,15 @@ jobs:
           python-version: '3.11'
       
       - name: Install Dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install requests
+        run: pip install requests
       
       - name: Run Config Updater
         run: python update_configs.py
       
-      - name: Check for Changes
-        id: check_changes
+      - name: Commit and Push
         run: |
-          if [ -n "$(git status --porcelain)" ]; then
-            echo "changes=true" >> $GITHUB_OUTPUT
-          else
-            echo "changes=false" >> $GITHUB_OUTPUT
-          fi
-      
-      - name: Commit and Push Changes
-        if: steps.check_changes.outputs.changes == 'true'
-        run: |
-          git config --local user.email "github-actions[bot]@users.noreply.github.com"
-          git config --local user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git config user.name "github-actions[bot]"
           git add -A
-          git commit -m "🔄 Update configs - $(date '+%Y-%m-%d %H:%M:%S UTC')"
+          git diff --staged --quiet || git commit -m "🔄 Update $(date '+%Y-%m-%d %H:%M UTC')"
           git push
