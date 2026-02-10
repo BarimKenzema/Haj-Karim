@@ -16,6 +16,7 @@ import os
 # Configuration
 TIMEOUT = 5
 MAX_WORKERS = 100
+MAX_SERVERS = 444  # Maximum servers per output file
 
 # CLOUDFLARE CONFIGS (First Group - Separate)
 CLOUDFLARE_URLS = [
@@ -253,15 +254,21 @@ def test_all_configs(configs, max_workers=MAX_WORKERS):
     return alive_configs
 
 
-def save_configs(configs, output_file):
-    """Save configs to file (subscription format - one per line)"""
+def save_configs(configs, output_file, max_servers=MAX_SERVERS):
+    """Save configs to file (limited to max_servers)"""
     os.makedirs(os.path.dirname(output_file), exist_ok=True)
     
+    # Limit to max_servers
+    limited_configs = configs[:max_servers]
+    
     with open(output_file, 'w', encoding='utf-8') as f:
-        for config, latency in configs:
+        for config, latency in limited_configs:
             f.write(f"{config}\n")
     
-    print(f"[INFO] Saved {len(configs)} configs to {output_file}")
+    if len(configs) > max_servers:
+        print(f"[INFO] Limited from {len(configs)} to {max_servers} servers")
+    
+    print(f"[INFO] Saved {len(limited_configs)} configs to {output_file}")
 
 
 def process_group(urls, output_file, group_name):
@@ -294,23 +301,29 @@ def process_group(urls, output_file, group_name):
         open(output_file, 'w').close()
         return
     
-    # Sort by latency
+    # Sort by latency (fastest first)
     alive_configs.sort(key=lambda x: x[1])
     
-    # Save
-    save_configs(alive_configs, output_file)
+    # Save (limited to MAX_SERVERS)
+    save_configs(alive_configs, output_file, MAX_SERVERS)
     
     # Show top 5
     print(f"\n[INFO] Top 5 fastest:")
     for i, (config, latency) in enumerate(alive_configs[:5], 1):
         server, port = extract_server_info(config)
         print(f"  {i}. {server}:{port} - {latency}ms")
+    
+    # Show stats
+    total_alive = len(alive_configs)
+    saved = min(total_alive, MAX_SERVERS)
+    print(f"\n[INFO] Stats: {total_alive} alive, {saved} saved (max {MAX_SERVERS})")
 
 
 def main():
     print("="*60)
     print("Proxy Config Updater")
     print(f"Time: {time.strftime('%Y-%m-%d %H:%M:%S UTC')}")
+    print(f"Max servers per file: {MAX_SERVERS}")
     print("="*60)
     
     # Process CLOUDFLARE configs (First Group)
