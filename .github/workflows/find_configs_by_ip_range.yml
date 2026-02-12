@@ -1,0 +1,79 @@
+name: Find Configs by IP Range
+
+on:
+  workflow_dispatch:
+    inputs:
+      working_ips:
+        description: 'Working IPs (comma-separated, e.g., 45.76.74.41,91.147.95.229)'
+        required: true
+        default: '45.76.74.41'
+      subnet_mask:
+        description: 'Subnet mask (8, 16, 24, or 32)'
+        required: true
+        default: '24'
+        type: choice
+        options:
+          - '8'
+          - '16'
+          - '24'
+          - '32'
+      search_security:
+        description: 'Security type (reality, tls, or leave blank for any)'
+        required: false
+        default: 'reality'
+      search_flow:
+        description: 'Flow type (e.g., xtls-rprx-vision or leave blank)'
+        required: false
+        default: 'xtls-rprx-vision'
+      max_results:
+        description: 'Maximum number of results (0 = unlimited)'
+        required: false
+        default: '200'
+
+jobs:
+  find-by-ip-range:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      
+      - name: Install dependencies
+        run: |
+          pip install requests ipaddress
+      
+      - name: Run IP range finder
+        env:
+          WORKING_IPS: ${{ github.event.inputs.working_ips }}
+          SUBNET_MASK: ${{ github.event.inputs.subnet_mask }}
+          SEARCH_SECURITY: ${{ github.event.inputs.search_security }}
+          SEARCH_FLOW: ${{ github.event.inputs.search_flow }}
+          MAX_RESULTS: ${{ github.event.inputs.max_results }}
+        run: |
+          python scripts/ip_range_finder.py
+      
+      - name: Upload results
+        uses: actions/upload-artifact@v4
+        with:
+          name: ip-range-configs-${{ github.run_number }}
+          path: |
+            ip_range_configs.txt
+            ip_range_configs_plain.txt
+            ip_range_summary.txt
+          retention-days: 30
+      
+      - name: Display summary
+        run: |
+          echo "==============================================="
+          echo "IP RANGE SEARCH SUMMARY"
+          echo "==============================================="
+          cat ip_range_summary.txt
+          echo ""
+          echo "==============================================="
+          echo "Download the artifacts above to get full results"
+          echo "==============================================="
