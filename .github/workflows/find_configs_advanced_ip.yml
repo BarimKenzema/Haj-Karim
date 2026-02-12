@@ -1,0 +1,91 @@
+name: Find Configs - Advanced IP Search
+
+on:
+  workflow_dispatch:
+    inputs:
+      working_ip:
+        description: 'Working IP address (e.g., 45.76.74.41)'
+        required: true
+        default: '45.76.74.41'
+      search_mode:
+        description: 'Search mode'
+        required: true
+        type: choice
+        default: 'neighbors'
+        options:
+          - 'neighbors'
+          - 'provider'
+          - 'both'
+      neighbor_range:
+        description: 'How many neighboring /24 subnets to check (1-20)'
+        required: false
+        default: '5'
+      search_security:
+        description: 'Security filter (reality, tls, or blank)'
+        required: false
+        default: ''
+      search_flow:
+        description: 'Flow filter (xtls-rprx-vision or blank)'
+        required: false
+        default: ''
+      max_results:
+        description: 'Maximum results (0 = unlimited)'
+        required: false
+        default: '500'
+
+jobs:
+  advanced-ip-search:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      
+      - name: Install dependencies
+        run: |
+          pip install requests ipaddress
+      
+      - name: Run advanced IP finder
+        env:
+          WORKING_IP: ${{ github.event.inputs.working_ip }}
+          SEARCH_MODE: ${{ github.event.inputs.search_mode }}
+          NEIGHBOR_RANGE: ${{ github.event.inputs.neighbor_range }}
+          SEARCH_SECURITY: ${{ github.event.inputs.search_security }}
+          SEARCH_FLOW: ${{ github.event.inputs.search_flow }}
+          MAX_RESULTS: ${{ github.event.inputs.max_results }}
+        run: |
+          python scripts/advanced_ip_finder.py
+      
+      - name: Upload results
+        uses: actions/upload-artifact@v4
+        with:
+          name: advanced-ip-search-${{ github.run_number }}
+          path: |
+            advanced_ip_configs.txt
+            advanced_ip_configs_plain.txt
+            advanced_ip_summary.txt
+            provider_info.txt
+          retention-days: 30
+      
+      - name: Display summary
+        run: |
+          echo "==============================================="
+          echo "ADVANCED IP SEARCH RESULTS"
+          echo "==============================================="
+          cat advanced_ip_summary.txt
+          echo ""
+          if [ -f provider_info.txt ]; then
+            echo "==============================================="
+            echo "PROVIDER INFORMATION"
+            echo "==============================================="
+            cat provider_info.txt
+            echo ""
+          fi
+          echo "==============================================="
+          echo "Download artifacts for full results"
+          echo "==============================================="
