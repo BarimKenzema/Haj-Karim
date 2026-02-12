@@ -1,39 +1,37 @@
-name: Find Specific Configs
+name: Find Configs by IP Range
 
 on:
   workflow_dispatch:
     inputs:
-      search_sni:
-        description: 'SNI to search for (e.g., www.icloud.com)'
-        required: false
-        default: 'www.icloud.com'
+      working_ips:
+        description: 'Working IPs (comma-separated, e.g., 45.76.74.41,91.147.95.229)'
+        required: true
+        default: '45.76.74.41'
+      subnet_mask:
+        description: 'Subnet mask (8, 16, 24, or 32)'
+        required: true
+        default: '24'
+        type: choice
+        options:
+          - '8'
+          - '16'
+          - '24'
+          - '32'
       search_security:
         description: 'Security type (reality, tls, or leave blank for any)'
         required: false
-        default: ''
+        default: 'reality'
       search_flow:
         description: 'Flow type (e.g., xtls-rprx-vision or leave blank)'
         required: false
-        default: ''
-      search_port:
-        description: 'Port number (or leave blank for any)'
-        required: false
-        default: ''
-      search_protocol:
-        description: 'Protocol (vless, vmess, trojan, or leave blank)'
-        required: false
-        default: ''
-      search_network:
-        description: 'Network type (tcp, ws, grpc, or leave blank)'
-        required: false
-        default: ''
+        default: 'xtls-rprx-vision'
       max_results:
         description: 'Maximum number of results (0 = unlimited)'
         required: false
-        default: '100'
+        default: '200'
 
 jobs:
-  find-configs:
+  find-by-ip-range:
     runs-on: ubuntu-latest
     
     steps:
@@ -47,36 +45,34 @@ jobs:
       
       - name: Install dependencies
         run: |
-          pip install requests
+          pip install requests ipaddress
       
-      - name: Run config finder
+      - name: Run IP range finder
         env:
-          SEARCH_SNI: ${{ github.event.inputs.search_sni }}
+          WORKING_IPS: ${{ github.event.inputs.working_ips }}
+          SUBNET_MASK: ${{ github.event.inputs.subnet_mask }}
           SEARCH_SECURITY: ${{ github.event.inputs.search_security }}
           SEARCH_FLOW: ${{ github.event.inputs.search_flow }}
-          SEARCH_PORT: ${{ github.event.inputs.search_port }}
-          SEARCH_PROTOCOL: ${{ github.event.inputs.search_protocol }}
-          SEARCH_NETWORK: ${{ github.event.inputs.search_network }}
           MAX_RESULTS: ${{ github.event.inputs.max_results }}
         run: |
-          python scripts/config_finder.py
+          python scripts/ip_range_finder.py
       
       - name: Upload results
         uses: actions/upload-artifact@v4
         with:
-          name: found-configs-${{ github.run_number }}
+          name: ip-range-configs-${{ github.run_number }}
           path: |
-            found_configs.txt
-            found_configs_plain.txt
-            search_summary.txt
+            ip_range_configs.txt
+            ip_range_configs_plain.txt
+            ip_range_summary.txt
           retention-days: 30
       
       - name: Display summary
         run: |
           echo "==============================================="
-          echo "SEARCH SUMMARY"
+          echo "IP RANGE SEARCH SUMMARY"
           echo "==============================================="
-          cat search_summary.txt
+          cat ip_range_summary.txt
           echo ""
           echo "==============================================="
           echo "Download the artifacts above to get full results"
