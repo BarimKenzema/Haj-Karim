@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
 """
-Config Finder Script
-Searches through database files for configs matching specific criteria
+IP Range Config Finder
+Searches for configs with IPs in the same range as working configs
 """
 
 import os
 import re
 import base64
 import json
+import ipaddress
 from urllib.parse import urlparse, parse_qs
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Set
 import requests
 
 # Configuration
@@ -19,26 +20,44 @@ SNI_DATABASE_PREFIX = "database_sni"
 MAX_DATABASE_NUM = 99
 
 # Search parameters from environment variables
-SEARCH_SNI = os.getenv('SEARCH_SNI', 'www.icloud.com')
+WORKING_IPS = os.getenv('WORKING_IPS', '45.76.74.41')
+SUBNET_MASK = int(os.getenv('SUBNET_MASK', '24'))
 SEARCH_SECURITY = os.getenv('SEARCH_SECURITY', '')
 SEARCH_FLOW = os.getenv('SEARCH_FLOW', '')
-SEARCH_PORT = os.getenv('SEARCH_PORT', '')
-SEARCH_PROTOCOL = os.getenv('SEARCH_PROTOCOL', '')
-SEARCH_NETWORK = os.getenv('SEARCH_NETWORK', '')
-MAX_RESULTS = int(os.getenv('MAX_RESULTS', '100'))
+MAX_RESULTS = int(os.getenv('MAX_RESULTS', '200'))
 
 print("=" * 80)
-print("CONFIG FINDER - Searching your database")
+print("IP RANGE CONFIG FINDER - Finding configs in same IP ranges")
 print("=" * 80)
-print(f"Search Parameters:")
-print(f"  SNI: {SEARCH_SNI if SEARCH_SNI else 'Any'}")
-print(f"  Security: {SEARCH_SECURITY if SEARCH_SECURITY else 'Any'}")
-print(f"  Flow: {SEARCH_FLOW if SEARCH_FLOW else 'Any'}")
-print(f"  Port: {SEARCH_PORT if SEARCH_PORT else 'Any'}")
-print(f"  Protocol: {SEARCH_PROTOCOL if SEARCH_PROTOCOL else 'Any'}")
-print(f"  Network: {SEARCH_NETWORK if SEARCH_NETWORK else 'Any'}")
-print(f"  Max Results: {MAX_RESULTS if MAX_RESULTS > 0 else 'Unlimited'}")
+print(f"Working IPs: {WORKING_IPS}")
+print(f"Subnet Mask: /{SUBNET_MASK}")
+print(f"Security Filter: {SEARCH_SECURITY if SEARCH_SECURITY else 'Any'}")
+print(f"Flow Filter: {SEARCH_FLOW if SEARCH_FLOW else 'Any'}")
+print(f"Max Results: {MAX_RESULTS if MAX_RESULTS > 0 else 'Unlimited'}")
 print("=" * 80)
+
+# Parse working IPs and create subnets
+WORKING_IP_LIST = [ip.strip() for ip in WORKING_IPS.split(',')]
+TARGET_SUBNETS = []
+
+print(f"\nCalculating IP ranges from {len(WORKING_IP_LIST)} working IP(s):")
+for ip_str in WORKING_IP_LIST:
+    try:
+        ip = ipaddress.ip_address(ip_str)
+        # Create network based on subnet mask
+        network = ipaddress.ip_network(f"{ip}/{SUBNET_MASK}", strict=False)
+        TARGET_SUBNETS.append(network)
+        print(f"  ✅ {ip_str} → {network} ({network.num_addresses} addresses)")
+    except Exception as e:
+        print(f"  ❌ Invalid IP: {ip_str} - {e}")
+
+if not TARGET_SUBNETS:
+    print("\n❌ No valid IP ranges to search for!")
+    exit(1)
+
+print(f"\nSearching for configs in {len(TARGET_SUBNETS)} IP range(s)")
+print("=" * 80)
+
 
 def download_and_decode(url: str) -> List[str]:
     """Download and decode a base64 encoded database file."""
@@ -65,6 +84,7 @@ def download_and_decode(url: str) -> List[str]:
         print(f"  Warning: Could not load {url}: {e}")
         return []
 
+
 def parse_vmess_config(config_str: str) -> Optional[Dict]:
     """Parse VMess config and return JSON data."""
     try:
@@ -87,20 +107,68 @@ def parse_vmess_config(config_str: str) -> Optional[Dict]:
     except Exception:
         return None
 
+
+def extract_ip_from_config(config_str: str) -> Optional[str]:
+    """Extract IP address from config string."""
+    try:
+        if config_str.startswith('vmess://'):
+            vmess_data = parse_vmess_config(config_str)
+            if vmess_data:
+                host = vmess_data.get('add', '')
+                # Check if it's an IP
+                try:
+                    ipaddress.ip_address(host)
+                    return host
+                except:
+                    return None
+        
+        elif config_str.startswith(('vless://', 'trojan://', 'ss://')):
+            parsed = urlparse(config_str)
+            host = parsed.hostname
+            if host:
+                try:
+                    ipaddress.ip_address(host)
+                    return host
+                except:
+                    return None
+        
+        return None
+    except Exception:
+        return None
+
+
 def extract_config_details(config_str: str) -> Dict:
     """Extract all relevant details from a config string."""
     details = {
         'protocol': '',
         'host': '',
         'port': '',
-        'sni': '',
+        'ip': None,
         'security': '',
         'flow': '',
         'network': '',
-        'config': config_str
+        'config': config_str,
+        'in_target_range': False,
+        'matched_subnet': None
     }
     
     try:
+        # Extract IP
+        ip_str = extract_ip_from_config(config_str)
+        if ip_str:
+            details['ip'] = ip_str
+            
+            # Check if IP is in any target subnet
+            try:
+                ip_addr = ipaddress.ip_address(ip_str)
+                for subnet in TARGET_SUBNETS:
+                    if ip_addr in subnet:
+                        details['in_target_range'] = True
+                        details['matched_subnet'] = str(subnet)
+                        break
+            except:
+                pass
+        
         if config_str.startswith('vmess://'):
             vmess_data = parse_vmess_config(config_str)
             if not vmess_data:
@@ -109,7 +177,6 @@ def extract_config_details(config_str: str) -> Dict:
             details['protocol'] = 'vmess'
             details['host'] = vmess_data.get('add', '')
             details['port'] = str(vmess_data.get('port', ''))
-            details['sni'] = vmess_data.get('sni', '')
             details['security'] = vmess_data.get('tls', 'none')
             details['network'] = vmess_data.get('net', 'tcp')
         
@@ -120,14 +187,12 @@ def extract_config_details(config_str: str) -> Dict:
             details['protocol'] = parsed.scheme
             details['host'] = parsed.hostname or ''
             details['port'] = str(parsed.port) if parsed.port else ''
-            details['sni'] = params.get('sni', [''])[0] or params.get('serverName', [''])[0]
             details['security'] = params.get('security', ['none'])[0]
             details['flow'] = params.get('flow', [''])[0]
             details['network'] = params.get('type', ['tcp'])[0]
         
         elif config_str.startswith('ss://'):
             details['protocol'] = 'shadowsocks'
-            # Basic parsing for ss
             parts = config_str.split('@')
             if len(parts) == 2:
                 server_part = parts[1].split('#')[0]
@@ -141,19 +206,13 @@ def extract_config_details(config_str: str) -> Dict:
     
     return details
 
+
 def matches_criteria(details: Dict) -> bool:
     """Check if config matches search criteria."""
     
-    # SNI check
-    if SEARCH_SNI:
-        sni_match = False
-        if SEARCH_SNI.lower() in details['sni'].lower():
-            sni_match = True
-        # Also check in full config for SNI
-        if SEARCH_SNI.lower() in details['config'].lower():
-            sni_match = True
-        if not sni_match:
-            return False
+    # MUST be in target IP range
+    if not details['in_target_range']:
+        return False
     
     # Security check
     if SEARCH_SECURITY:
@@ -165,30 +224,18 @@ def matches_criteria(details: Dict) -> bool:
         if SEARCH_FLOW.lower() not in details['flow'].lower():
             return False
     
-    # Port check
-    if SEARCH_PORT:
-        if str(SEARCH_PORT) != details['port']:
-            return False
-    
-    # Protocol check
-    if SEARCH_PROTOCOL:
-        if SEARCH_PROTOCOL.lower() != details['protocol'].lower():
-            return False
-    
-    # Network check
-    if SEARCH_NETWORK:
-        if SEARCH_NETWORK.lower() != details['network'].lower():
-            return False
-    
     return True
+
 
 def search_databases() -> List[Dict]:
     """Search through all database files."""
     found_configs = []
     total_scanned = 0
+    total_with_ip = 0
+    total_in_range = 0
     
     print("\n" + "=" * 80)
-    print("SEARCHING DATABASES")
+    print("SEARCHING DATABASES FOR IP RANGES")
     print("=" * 80)
     
     # Search IP databases
@@ -208,7 +255,7 @@ def search_databases() -> List[Dict]:
         
         if not configs:
             print("(not found or empty)")
-            if i > 5:  # Stop if we hit 5 consecutive empty files
+            if i > 5:
                 break
             continue
         
@@ -217,6 +264,12 @@ def search_databases() -> List[Dict]:
         for config in configs:
             total_scanned += 1
             details = extract_config_details(config)
+            
+            if details['ip']:
+                total_with_ip += 1
+            
+            if details['in_target_range']:
+                total_in_range += 1
             
             if matches_criteria(details):
                 found_configs.append(details)
@@ -250,6 +303,12 @@ def search_databases() -> List[Dict]:
             total_scanned += 1
             details = extract_config_details(config)
             
+            if details['ip']:
+                total_with_ip += 1
+            
+            if details['in_target_range']:
+                total_in_range += 1
+            
             if matches_criteria(details):
                 # Check for duplicates
                 if not any(d['config'] == details['config'] for d in found_configs):
@@ -259,111 +318,139 @@ def search_databases() -> List[Dict]:
     
     print("\n" + "=" * 80)
     print(f"Total configs scanned: {total_scanned}")
-    print(f"Matching configs found: {len(found_configs)}")
+    print(f"Configs with IP addresses: {total_with_ip}")
+    print(f"IPs in target range: {total_in_range}")
+    print(f"Matching all criteria: {len(found_configs)}")
     print("=" * 80)
     
     return found_configs
+
 
 def save_results(found_configs: List[Dict]):
     """Save results to files."""
     
     if not found_configs:
-        print("\n⚠️  No matching configs found!")
+        print("\n⚠️  No matching configs found in the IP ranges!")
         
         # Create empty files with explanation
-        with open('search_summary.txt', 'w') as f:
-            f.write("NO MATCHING CONFIGS FOUND\n\n")
+        with open('ip_range_summary.txt', 'w') as f:
+            f.write("NO MATCHING CONFIGS FOUND IN IP RANGES\n\n")
             f.write("Search Parameters:\n")
-            f.write(f"  SNI: {SEARCH_SNI if SEARCH_SNI else 'Any'}\n")
+            f.write(f"  Working IPs: {WORKING_IPS}\n")
+            f.write(f"  Subnet Mask: /{SUBNET_MASK}\n")
+            f.write(f"  Target Subnets:\n")
+            for subnet in TARGET_SUBNETS:
+                f.write(f"    - {subnet}\n")
             f.write(f"  Security: {SEARCH_SECURITY if SEARCH_SECURITY else 'Any'}\n")
             f.write(f"  Flow: {SEARCH_FLOW if SEARCH_FLOW else 'Any'}\n")
-            f.write(f"  Port: {SEARCH_PORT if SEARCH_PORT else 'Any'}\n")
-            f.write(f"  Protocol: {SEARCH_PROTOCOL if SEARCH_PROTOCOL else 'Any'}\n")
-            f.write(f"  Network: {SEARCH_NETWORK if SEARCH_NETWORK else 'Any'}\n")
         
-        with open('found_configs.txt', 'w') as f:
-            f.write("No configs found matching criteria\n")
+        with open('ip_range_configs.txt', 'w') as f:
+            f.write("No configs found in the specified IP ranges\n")
         
-        with open('found_configs_plain.txt', 'w') as f:
-            f.write("No configs found matching criteria\n")
+        with open('ip_range_configs_plain.txt', 'w') as f:
+            f.write("No configs found in the specified IP ranges\n")
         
         return
     
+    # Group configs by subnet
+    configs_by_subnet = {}
+    for details in found_configs:
+        subnet = details['matched_subnet']
+        if subnet not in configs_by_subnet:
+            configs_by_subnet[subnet] = []
+        configs_by_subnet[subnet].append(details)
+    
     # Save detailed results
-    with open('found_configs.txt', 'w', encoding='utf-8') as f:
+    with open('ip_range_configs.txt', 'w', encoding='utf-8') as f:
         f.write("=" * 80 + "\n")
-        f.write("FOUND CONFIGS - DETAILED\n")
+        f.write("CONFIGS FOUND IN TARGET IP RANGES\n")
         f.write("=" * 80 + "\n\n")
         
-        for i, details in enumerate(found_configs, 1):
-            f.write(f"Config #{i}\n")
-            f.write(f"  Protocol: {details['protocol']}\n")
-            f.write(f"  Host: {details['host']}\n")
-            f.write(f"  Port: {details['port']}\n")
-            f.write(f"  SNI: {details['sni']}\n")
-            f.write(f"  Security: {details['security']}\n")
-            f.write(f"  Flow: {details['flow']}\n")
-            f.write(f"  Network: {details['network']}\n")
-            f.write(f"  Full Config:\n")
-            f.write(f"  {details['config']}\n")
-            f.write("-" * 80 + "\n\n")
+        for subnet, configs in configs_by_subnet.items():
+            f.write(f"\n{'=' * 80}\n")
+            f.write(f"Subnet: {subnet} ({len(configs)} configs)\n")
+            f.write(f"{'=' * 80}\n\n")
+            
+            for i, details in enumerate(configs, 1):
+                f.write(f"Config #{i}\n")
+                f.write(f"  IP: {details['ip']}\n")
+                f.write(f"  Protocol: {details['protocol']}\n")
+                f.write(f"  Port: {details['port']}\n")
+                f.write(f"  Security: {details['security']}\n")
+                f.write(f"  Flow: {details['flow']}\n")
+                f.write(f"  Network: {details['network']}\n")
+                f.write(f"  Full Config:\n")
+                f.write(f"  {details['config']}\n")
+                f.write("-" * 80 + "\n\n")
     
     # Save plain configs only
-    with open('found_configs_plain.txt', 'w', encoding='utf-8') as f:
-        for details in found_configs:
-            f.write(details['config'] + '\n')
+    with open('ip_range_configs_plain.txt', 'w', encoding='utf-8') as f:
+        for subnet, configs in configs_by_subnet.items():
+            f.write(f"# Subnet: {subnet} ({len(configs)} configs)\n")
+            for details in configs:
+                f.write(details['config'] + '\n')
+            f.write('\n')
     
     # Save summary
-    with open('search_summary.txt', 'w', encoding='utf-8') as f:
+    with open('ip_range_summary.txt', 'w', encoding='utf-8') as f:
         f.write("=" * 80 + "\n")
-        f.write("SEARCH SUMMARY\n")
+        f.write("IP RANGE SEARCH SUMMARY\n")
         f.write("=" * 80 + "\n\n")
         f.write(f"Search Parameters:\n")
-        f.write(f"  SNI: {SEARCH_SNI if SEARCH_SNI else 'Any'}\n")
+        f.write(f"  Working IPs: {WORKING_IPS}\n")
+        f.write(f"  Subnet Mask: /{SUBNET_MASK}\n")
+        f.write(f"  Target Subnets:\n")
+        for subnet in TARGET_SUBNETS:
+            f.write(f"    - {subnet} ({subnet.num_addresses} addresses)\n")
         f.write(f"  Security: {SEARCH_SECURITY if SEARCH_SECURITY else 'Any'}\n")
         f.write(f"  Flow: {SEARCH_FLOW if SEARCH_FLOW else 'Any'}\n")
-        f.write(f"  Port: {SEARCH_PORT if SEARCH_PORT else 'Any'}\n")
-        f.write(f"  Protocol: {SEARCH_PROTOCOL if SEARCH_PROTOCOL else 'Any'}\n")
-        f.write(f"  Network: {SEARCH_NETWORK if SEARCH_NETWORK else 'Any'}\n")
         f.write(f"\nResults: {len(found_configs)} configs found\n\n")
+        
+        # Breakdown by subnet
+        f.write("Configs per Subnet:\n")
+        for subnet, configs in configs_by_subnet.items():
+            f.write(f"  {subnet}: {len(configs)} configs\n")
+        f.write("\n")
+        
+        # IP distribution
+        f.write("Unique IPs Found:\n")
+        unique_ips = set(d['ip'] for d in found_configs)
+        for ip in sorted(unique_ips):
+            count = sum(1 for d in found_configs if d['ip'] == ip)
+            f.write(f"  {ip}: {count} config(s)\n")
+        f.write("\n")
         
         # Statistics
         protocols = {}
         securities = {}
         flows = {}
-        ports = {}
         
         for details in found_configs:
             protocols[details['protocol']] = protocols.get(details['protocol'], 0) + 1
             securities[details['security']] = securities.get(details['security'], 0) + 1
             if details['flow']:
                 flows[details['flow']] = flows.get(details['flow'], 0) + 1
-            if details['port']:
-                ports[details['port']] = ports.get(details['port'], 0) + 1
         
         f.write("Statistics:\n")
         f.write(f"  Protocols: {protocols}\n")
         f.write(f"  Security: {securities}\n")
         f.write(f"  Flows: {flows}\n")
-        f.write(f"  Ports: {ports}\n")
     
     print(f"\n✅ Results saved to:")
-    print(f"  - found_configs.txt (detailed)")
-    print(f"  - found_configs_plain.txt (configs only)")
-    print(f"  - search_summary.txt (summary)")
+    print(f"  - ip_range_configs.txt (detailed)")
+    print(f"  - ip_range_configs_plain.txt (configs only)")
+    print(f"  - ip_range_summary.txt (summary)")
     
-    # Display first few results
+    # Display results
     print(f"\n" + "=" * 80)
-    print(f"PREVIEW - First 5 Results")
+    print(f"RESULTS BY SUBNET")
     print("=" * 80)
     
-    for i, details in enumerate(found_configs[:5], 1):
-        print(f"\nConfig #{i}:")
-        print(f"  Protocol: {details['protocol']}")
-        print(f"  SNI: {details['sni']}")
-        print(f"  Security: {details['security']}")
-        print(f"  Flow: {details['flow']}")
-        print(f"  Port: {details['port']}")
+    for subnet, configs in configs_by_subnet.items():
+        print(f"\n📍 {subnet}: {len(configs)} configs")
+        unique_ips_in_subnet = set(d['ip'] for d in configs)
+        print(f"   Unique IPs: {', '.join(sorted(unique_ips_in_subnet))}")
+
 
 def main():
     """Main execution."""
@@ -381,6 +468,7 @@ def main():
         import traceback
         traceback.print_exc()
         exit(1)
+
 
 if __name__ == "__main__":
     main()
