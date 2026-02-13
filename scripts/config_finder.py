@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
-Config Finder Script
+Config Finder Script - Robust Version
 Searches through database files for configs matching specific criteria
+Handles malformed configs without crashing
 """
 
 import os
@@ -28,7 +29,7 @@ SEARCH_NETWORK = os.getenv('SEARCH_NETWORK', '')
 MAX_RESULTS = int(os.getenv('MAX_RESULTS', '100'))
 
 print("=" * 80)
-print("CONFIG FINDER - Searching your database")
+print("CONFIG FINDER - Searching your database (Robust Mode)")
 print("=" * 80)
 print(f"Search Parameters:")
 print(f"  SNI: {SEARCH_SNI if SEARCH_SNI else 'Any'}")
@@ -39,6 +40,22 @@ print(f"  Protocol: {SEARCH_PROTOCOL if SEARCH_PROTOCOL else 'Any'}")
 print(f"  Network: {SEARCH_NETWORK if SEARCH_NETWORK else 'Any'}")
 print(f"  Max Results: {MAX_RESULTS if MAX_RESULTS > 0 else 'Unlimited'}")
 print("=" * 80)
+
+def safe_lower(value):
+    """Safely convert to lower case, returning empty string if None."""
+    if value is None:
+        return ""
+    return str(value).lower().strip()
+
+def clean_port(port_str):
+    """Clean port string (handle '443:80' or non-numeric)."""
+    if not port_str:
+        return ""
+    # If port contains ':', take the first part (common scraper artifact)
+    if ':' in str(port_str):
+        port_str = str(port_str).split(':')[0]
+    # Remove non-digits
+    return ''.join(filter(str.isdigit, str(port_str)))
 
 def download_and_decode(url: str) -> List[str]:
     """Download and decode a base64 encoded database file."""
@@ -79,7 +96,7 @@ def parse_vmess_config(config_str: str) -> Optional[Dict]:
             try:
                 decoded = decoded_bytes.decode(encoding, errors='ignore')
                 parsed = json.loads(decoded)
-                if 'add' in parsed and 'port' in parsed:
+                if 'add' in parsed: # Relaxed check
                     return parsed
             except Exception:
                 continue
@@ -89,6 +106,7 @@ def parse_vmess_config(config_str: str) -> Optional[Dict]:
 
 def extract_config_details(config_str: str) -> Dict:
     """Extract all relevant details from a config string."""
+    # Initialize with safe empty strings
     details = {
         'protocol': '',
         'host': '',
@@ -107,37 +125,55 @@ def extract_config_details(config_str: str) -> Dict:
                 return details
             
             details['protocol'] = 'vmess'
-            details['host'] = vmess_data.get('add', '')
-            details['port'] = str(vmess_data.get('port', ''))
-            details['sni'] = vmess_data.get('sni', '')
-            details['security'] = vmess_data.get('tls', 'none')
-            details['network'] = vmess_data.get('net', 'tcp')
+            details['host'] = str(vmess_data.get('add', ''))
+            details['port'] = clean_port(vmess_data.get('port', ''))
+            details['sni'] = str(vmess_data.get('sni', ''))
+            details['security'] = str(vmess_data.get('tls', 'none'))
+            details['network'] = str(vmess_data.get('net', 'tcp'))
         
         elif config_str.startswith(('vless://', 'trojan://')):
-            parsed = urlparse(config_str)
+            # Handle invalid URLs nicely
+            try:
+                parsed = urlparse(config_str)
+            except ValueError:
+                return details # Skip malformed URLs
+
             params = parse_qs(parsed.query)
             
             details['protocol'] = parsed.scheme
             details['host'] = parsed.hostname or ''
-            details['port'] = str(parsed.port) if parsed.port else ''
-            details['sni'] = params.get('sni', [''])[0] or params.get('serverName', [''])[0]
-            details['security'] = params.get('security', ['none'])[0]
-            details['flow'] = params.get('flow', [''])[0]
-            details['network'] = params.get('type', ['tcp'])[0]
+            details['port'] = clean_port(parsed.port)
+            
+            # Safe extraction from lists
+            sni_list = params.get('sni') or params.get('serverName') or ['']
+            details['sni'] = sni_list[0]
+            
+            security_list = params.get('security') or ['none']
+            details['security'] = security_list[0]
+            
+            flow_list = params.get('flow') or ['']
+            details['flow'] = flow_list[0]
+            
+            type_list = params.get('type') or ['tcp']
+            details['network'] = type_list[0]
         
         elif config_str.startswith('ss://'):
             details['protocol'] = 'shadowsocks'
-            # Basic parsing for ss
-            parts = config_str.split('@')
-            if len(parts) == 2:
-                server_part = parts[1].split('#')[0]
-                if ':' in server_part:
-                    host, port = server_part.rsplit(':', 1)
-                    details['host'] = host
-                    details['port'] = port
+            try:
+                parts = config_str.split('@')
+                if len(parts) >= 2:
+                    server_part = parts[-1].split('#')[0]
+                    if ':' in server_part:
+                        # Find last colon for port
+                        host, port = server_part.rsplit(':', 1)
+                        details['host'] = host
+                        details['port'] = clean_port(port)
+            except:
+                pass
     
-    except Exception as e:
-        print(f"  Warning: Could not parse config: {e}")
+    except Exception:
+        # Silently fail on bad configs to prevent log spam
+        pass
     
     return details
 
@@ -146,38 +182,37 @@ def matches_criteria(details: Dict) -> bool:
     
     # SNI check
     if SEARCH_SNI:
-        sni_match = False
-        if SEARCH_SNI.lower() in details['sni'].lower():
-            sni_match = True
-        # Also check in full config for SNI
-        if SEARCH_SNI.lower() in details['config'].lower():
-            sni_match = True
-        if not sni_match:
+        search_term = safe_lower(SEARCH_SNI)
+        config_sni = safe_lower(details['sni'])
+        config_full = safe_lower(details['config'])
+        
+        # Check explicit SNI field or full config string
+        if search_term not in config_sni and search_term not in config_full:
             return False
     
     # Security check
     if SEARCH_SECURITY:
-        if SEARCH_SECURITY.lower() not in details['security'].lower():
+        if safe_lower(SEARCH_SECURITY) not in safe_lower(details['security']):
             return False
     
     # Flow check
     if SEARCH_FLOW:
-        if SEARCH_FLOW.lower() not in details['flow'].lower():
+        if safe_lower(SEARCH_FLOW) not in safe_lower(details['flow']):
             return False
     
     # Port check
     if SEARCH_PORT:
-        if str(SEARCH_PORT) != details['port']:
+        if str(SEARCH_PORT) != str(details['port']):
             return False
     
     # Protocol check
     if SEARCH_PROTOCOL:
-        if SEARCH_PROTOCOL.lower() != details['protocol'].lower():
+        if safe_lower(SEARCH_PROTOCOL) != safe_lower(details['protocol']):
             return False
     
     # Network check
     if SEARCH_NETWORK:
-        if SEARCH_NETWORK.lower() != details['network'].lower():
+        if safe_lower(SEARCH_NETWORK) != safe_lower(details['network']):
             return False
     
     return True
@@ -191,71 +226,45 @@ def search_databases() -> List[Dict]:
     print("SEARCHING DATABASES")
     print("=" * 80)
     
-    # Search IP databases
-    print("\n📁 Searching IP databases...")
-    for i in range(1, MAX_DATABASE_NUM + 1):
-        if MAX_RESULTS > 0 and len(found_configs) >= MAX_RESULTS:
-            break
-        
-        if i == 1:
-            url = f"{BASE_URL}/{IP_DATABASE_PREFIX}.txt"
-        else:
-            url = f"{BASE_URL}/{IP_DATABASE_PREFIX}_{i}.txt"
-        
-        print(f"  Checking: {IP_DATABASE_PREFIX}{'_' + str(i) if i > 1 else ''}.txt", end=" ")
-        
-        configs = download_and_decode(url)
-        
-        if not configs:
-            print("(not found or empty)")
-            if i > 5:  # Stop if we hit 5 consecutive empty files
-                break
-            continue
-        
-        print(f"({len(configs)} configs)")
-        
-        for config in configs:
-            total_scanned += 1
-            details = extract_config_details(config)
-            
-            if matches_criteria(details):
-                found_configs.append(details)
-                if MAX_RESULTS > 0 and len(found_configs) >= MAX_RESULTS:
-                    break
+    # Combined search for cleaner code
+    db_types = [(IP_DATABASE_PREFIX, "IP"), (SNI_DATABASE_PREFIX, "SNI")]
     
-    # Search SNI databases
-    print("\n📁 Searching SNI databases...")
-    for i in range(1, MAX_DATABASE_NUM + 1):
-        if MAX_RESULTS > 0 and len(found_configs) >= MAX_RESULTS:
-            break
+    for prefix, label in db_types:
+        print(f"\n📁 Searching {label} databases...")
         
-        if i == 1:
-            url = f"{BASE_URL}/{SNI_DATABASE_PREFIX}.txt"
-        else:
-            url = f"{BASE_URL}/{SNI_DATABASE_PREFIX}_{i}.txt"
-        
-        print(f"  Checking: {SNI_DATABASE_PREFIX}{'_' + str(i) if i > 1 else ''}.txt", end=" ")
-        
-        configs = download_and_decode(url)
-        
-        if not configs:
-            print("(not found or empty)")
-            if i > 5:
+        for i in range(1, MAX_DATABASE_NUM + 1):
+            if MAX_RESULTS > 0 and len(found_configs) >= MAX_RESULTS:
                 break
-            continue
-        
-        print(f"({len(configs)} configs)")
-        
-        for config in configs:
-            total_scanned += 1
-            details = extract_config_details(config)
             
-            if matches_criteria(details):
-                # Check for duplicates
-                if not any(d['config'] == details['config'] for d in found_configs):
-                    found_configs.append(details)
-                    if MAX_RESULTS > 0 and len(found_configs) >= MAX_RESULTS:
-                        break
+            filename = f"{prefix}.txt" if i == 1 else f"{prefix}_{i}.txt"
+            url = f"{BASE_URL}/{filename}"
+            
+            print(f"  Checking: {filename}", end=" ")
+            
+            configs = download_and_decode(url)
+            
+            if not configs:
+                print("(not found or empty)")
+                if i > 5: # Stop if we hit 5 consecutive empty files
+                    break
+                continue
+            
+            print(f"({len(configs)} configs)")
+            
+            for config in configs:
+                total_scanned += 1
+                details = extract_config_details(config)
+                
+                # Only check valid configs
+                if not details['protocol']:
+                    continue
+
+                if matches_criteria(details):
+                    # Check for duplicates
+                    if not any(d['config'] == details['config'] for d in found_configs):
+                        found_configs.append(details)
+                        if MAX_RESULTS > 0 and len(found_configs) >= MAX_RESULTS:
+                            break
     
     print("\n" + "=" * 80)
     print(f"Total configs scanned: {total_scanned}")
@@ -267,26 +276,21 @@ def search_databases() -> List[Dict]:
 def save_results(found_configs: List[Dict]):
     """Save results to files."""
     
+    # Create files even if empty
+    with open('search_summary.txt', 'w', encoding='utf-8') as f:
+        f.write("=" * 80 + "\n")
+        f.write("SEARCH SUMMARY\n")
+        f.write("=" * 80 + "\n\n")
+        f.write(f"Results: {len(found_configs)} configs found\n")
+    
+    with open('found_configs.txt', 'w', encoding='utf-8') as f:
+        f.write("Configs found:\n")
+
+    with open('found_configs_plain.txt', 'w', encoding='utf-8') as f:
+        f.write("")
+
     if not found_configs:
         print("\n⚠️  No matching configs found!")
-        
-        # Create empty files with explanation
-        with open('search_summary.txt', 'w') as f:
-            f.write("NO MATCHING CONFIGS FOUND\n\n")
-            f.write("Search Parameters:\n")
-            f.write(f"  SNI: {SEARCH_SNI if SEARCH_SNI else 'Any'}\n")
-            f.write(f"  Security: {SEARCH_SECURITY if SEARCH_SECURITY else 'Any'}\n")
-            f.write(f"  Flow: {SEARCH_FLOW if SEARCH_FLOW else 'Any'}\n")
-            f.write(f"  Port: {SEARCH_PORT if SEARCH_PORT else 'Any'}\n")
-            f.write(f"  Protocol: {SEARCH_PROTOCOL if SEARCH_PROTOCOL else 'Any'}\n")
-            f.write(f"  Network: {SEARCH_NETWORK if SEARCH_NETWORK else 'Any'}\n")
-        
-        with open('found_configs.txt', 'w') as f:
-            f.write("No configs found matching criteria\n")
-        
-        with open('found_configs_plain.txt', 'w') as f:
-            f.write("No configs found matching criteria\n")
-        
         return
     
     # Save detailed results
@@ -301,9 +305,6 @@ def save_results(found_configs: List[Dict]):
             f.write(f"  Host: {details['host']}\n")
             f.write(f"  Port: {details['port']}\n")
             f.write(f"  SNI: {details['sni']}\n")
-            f.write(f"  Security: {details['security']}\n")
-            f.write(f"  Flow: {details['flow']}\n")
-            f.write(f"  Network: {details['network']}\n")
             f.write(f"  Full Config:\n")
             f.write(f"  {details['config']}\n")
             f.write("-" * 80 + "\n\n")
@@ -313,57 +314,29 @@ def save_results(found_configs: List[Dict]):
         for details in found_configs:
             f.write(details['config'] + '\n')
     
-    # Save summary
-    with open('search_summary.txt', 'w', encoding='utf-8') as f:
-        f.write("=" * 80 + "\n")
-        f.write("SEARCH SUMMARY\n")
-        f.write("=" * 80 + "\n\n")
-        f.write(f"Search Parameters:\n")
-        f.write(f"  SNI: {SEARCH_SNI if SEARCH_SNI else 'Any'}\n")
-        f.write(f"  Security: {SEARCH_SECURITY if SEARCH_SECURITY else 'Any'}\n")
-        f.write(f"  Flow: {SEARCH_FLOW if SEARCH_FLOW else 'Any'}\n")
-        f.write(f"  Port: {SEARCH_PORT if SEARCH_PORT else 'Any'}\n")
-        f.write(f"  Protocol: {SEARCH_PROTOCOL if SEARCH_PROTOCOL else 'Any'}\n")
-        f.write(f"  Network: {SEARCH_NETWORK if SEARCH_NETWORK else 'Any'}\n")
-        f.write(f"\nResults: {len(found_configs)} configs found\n\n")
-        
+    # Save detailed summary
+    with open('search_summary.txt', 'a', encoding='utf-8') as f:
         # Statistics
         protocols = {}
         securities = {}
-        flows = {}
         ports = {}
         
         for details in found_configs:
-            protocols[details['protocol']] = protocols.get(details['protocol'], 0) + 1
-            securities[details['security']] = securities.get(details['security'], 0) + 1
-            if details['flow']:
-                flows[details['flow']] = flows.get(details['flow'], 0) + 1
-            if details['port']:
-                ports[details['port']] = ports.get(details['port'], 0) + 1
+            p = details['protocol'] or "unknown"
+            protocols[p] = protocols.get(p, 0) + 1
+            
+            s = details['security'] or "none"
+            securities[s] = securities.get(s, 0) + 1
+            
+            pt = details['port'] or "unknown"
+            ports[pt] = ports.get(pt, 0) + 1
         
-        f.write("Statistics:\n")
+        f.write("\nStatistics:\n")
         f.write(f"  Protocols: {protocols}\n")
         f.write(f"  Security: {securities}\n")
-        f.write(f"  Flows: {flows}\n")
         f.write(f"  Ports: {ports}\n")
     
-    print(f"\n✅ Results saved to:")
-    print(f"  - found_configs.txt (detailed)")
-    print(f"  - found_configs_plain.txt (configs only)")
-    print(f"  - search_summary.txt (summary)")
-    
-    # Display first few results
-    print(f"\n" + "=" * 80)
-    print(f"PREVIEW - First 5 Results")
-    print("=" * 80)
-    
-    for i, details in enumerate(found_configs[:5], 1):
-        print(f"\nConfig #{i}:")
-        print(f"  Protocol: {details['protocol']}")
-        print(f"  SNI: {details['sni']}")
-        print(f"  Security: {details['security']}")
-        print(f"  Flow: {details['flow']}")
-        print(f"  Port: {details['port']}")
+    print(f"\n✅ Results saved to artifacts.")
 
 def main():
     """Main execution."""
@@ -374,7 +347,6 @@ def main():
         print("\n" + "=" * 80)
         print("SEARCH COMPLETE!")
         print("=" * 80)
-        print("\nDownload the artifacts from GitHub Actions to get all files.")
         
     except Exception as e:
         print(f"\n❌ ERROR: {e}")
