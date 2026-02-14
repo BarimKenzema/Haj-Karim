@@ -2,7 +2,7 @@ name: Run V2Ray Collector
 
 on:
   schedule:
-    - cron: '0 */4 * * *'  # Every 2 hours
+    - cron: '0 */4 * * *'  # Every 4 hours
   workflow_dispatch:
 
 jobs:
@@ -48,8 +48,32 @@ jobs:
           # Reset to match remote (discards local history divergence)
           git reset --soft origin/main
           
-          # Stage all changes from the script
-          git add -A
+          # ============================================================
+          # Stage ONLY files that main.py generates
+          # DO NOT use 'git add -A' — it commits unrelated files like
+          # Haj-Karimsubscriptionsj.txt or any other manually edited file
+          # ============================================================
+          
+          # Active config files
+          git add filtered-for-refiner.txt 2>/dev/null || true
+          git add latest_ip_configs.txt 2>/dev/null || true
+          git add premium_configs.txt 2>/dev/null || true
+          git add premium_plain.txt 2>/dev/null || true
+          
+          # Database files (may have numbered suffixes)
+          git add database_sni*.txt 2>/dev/null || true
+          git add database_ip*.txt 2>/dev/null || true
+          
+          # Validated links cache
+          git add validated_subscriptions.json 2>/dev/null || true
+          
+          # Categorized subscription directories
+          git add splitted/ 2>/dev/null || true
+          git add protocols/ 2>/dev/null || true
+          git add networks/ 2>/dev/null || true
+          git add countries/ 2>/dev/null || true
+          git add security/ 2>/dev/null || true
+          git add flow/ 2>/dev/null || true
           
           # Check if there are actually changes to commit
           if git diff --cached --quiet; then
@@ -62,7 +86,7 @@ jobs:
           git commit -m "✅ Automated Update ${TIMESTAMP}"
           
           # Push with retry logic (3 attempts)
-          for attempt in {1..3}; do
+          for attempt in 1 2 3; do
             echo "Push attempt ${attempt}/3..."
             
             if git push origin main --force-with-lease; then
@@ -78,7 +102,17 @@ jobs:
                 echo "Rebase failed, resetting..."
                 git rebase --abort
                 git reset --soft origin/main
-                git add -A
+                
+                # Re-stage only our files (NOT git add -A)
+                git add filtered-for-refiner.txt 2>/dev/null || true
+                git add latest_ip_configs.txt 2>/dev/null || true
+                git add premium_configs.txt 2>/dev/null || true
+                git add premium_plain.txt 2>/dev/null || true
+                git add database_sni*.txt 2>/dev/null || true
+                git add database_ip*.txt 2>/dev/null || true
+                git add validated_subscriptions.json 2>/dev/null || true
+                git add splitted/ protocols/ networks/ countries/ security/ flow/ 2>/dev/null || true
+                
                 git commit -m "✅ Automated Update ${TIMESTAMP} [retry ${attempt}]"
               }
             fi
@@ -96,5 +130,4 @@ jobs:
           name: failure-logs
           path: |
             *.log
-            *.txt
           retention-days: 7
