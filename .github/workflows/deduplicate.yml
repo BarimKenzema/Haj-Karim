@@ -8,6 +8,8 @@ on:
 jobs:
   deduplicate:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     
     steps:
       - name: Checkout repository
@@ -29,11 +31,17 @@ jobs:
         run: |
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git config user.name "github-actions[bot]"
-          git add Pre-Hugs-*.txt .rotation_counter
+          
+          # Add the rotation counter file
+          git add .rotation_counter
+          
+          # Add the entire Hugs directory (pre-hugs and CF files)
+          git add Hugs/*.txt
+          
           if git diff --staged --quiet; then
             echo "No changes to commit"
           else
-            git commit -m "🔄 Auto-update: Deduplicated configs ($(date '+%Y-%m-%d %H:%M'))"
+            git commit -m "🔄 Auto-update: Processed configs ($(date '+%Y-%m-%d %H:%M'))"
             git push
           fi
         env:
