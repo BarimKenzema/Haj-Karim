@@ -42,16 +42,30 @@ jobs:
 
       - name: Commit and push changes
         run: |
+          # ============================================================
+          # CRITICAL FIX: Ensure .github directory is NEVER modified
+          # This prevents the "workflows permission" error
+          # ============================================================
+          
+          # Restore any changes to .github directory from HEAD
+          git checkout HEAD -- .github/ 2>/dev/null || true
+          
           # Fetch latest remote state
           git fetch origin main
           
-          # Reset to match remote (discards local history divergence)
-          git reset --soft origin/main
+          # Check if we're behind remote and sync
+          LOCAL=$(git rev-parse HEAD)
+          REMOTE=$(git rev-parse origin/main)
+          
+          if [ "$LOCAL" != "$REMOTE" ]; then
+            echo "⚠️ Local is different from remote, syncing..."
+            # Reset to remote, keeping working directory
+            git reset origin/main
+          fi
           
           # ============================================================
           # Stage ONLY files that main.py generates
-          # DO NOT use 'git add -A' — it commits unrelated files like
-          # Haj-Karimsubscriptionsj.txt or any other manually edited file
+          # NEVER use 'git add -A' or 'git add .'
           # ============================================================
           
           # Active config files
@@ -75,10 +89,30 @@ jobs:
           git add security/ 2>/dev/null || true
           git add flow/ 2>/dev/null || true
           
+          # ============================================================
+          # SAFETY: Explicitly unstage any .github changes
+          # ============================================================
+          git reset HEAD -- .github/ 2>/dev/null || true
+          
           # Check if there are actually changes to commit
           if git diff --cached --quiet; then
             echo "ℹ️ No changes to commit"
             exit 0
+          fi
+          
+          # Show what will be committed (for debugging)
+          echo "📋 Files to be committed:"
+          git diff --cached --name-only
+          
+          # Double-check no workflow files are staged
+          if git diff --cached --name-only | grep -q "^\.github/"; then
+            echo "❌ ERROR: .github files detected in staging! Aborting."
+            git reset HEAD -- .github/
+            # Re-check
+            if git diff --cached --name-only | grep -q "^\.github/"; then
+              echo "❌ CRITICAL: Could not unstage .github files. Aborting."
+              exit 1
+            fi
           fi
           
           # Commit with timestamp
@@ -89,7 +123,7 @@ jobs:
           for attempt in 1 2 3; do
             echo "Push attempt ${attempt}/3..."
             
-            if git push origin main --force-with-lease; then
+            if git push origin main; then
               echo "✅ Push successful!"
               exit 0
             else
@@ -98,12 +132,18 @@ jobs:
               
               # Re-sync before retry
               git fetch origin main
-              git rebase origin/main || {
-                echo "Rebase failed, resetting..."
-                git rebase --abort
-                git reset --soft origin/main
+              
+              # Try to rebase our changes on top of remote
+              if git rebase origin/main; then
+                echo "✅ Rebase successful"
+              else
+                echo "⚠️ Rebase failed, using reset strategy..."
+                git rebase --abort 2>/dev/null || true
                 
-                # Re-stage only our files (NOT git add -A)
+                # Reset to remote
+                git reset origin/main
+                
+                # Re-stage only our files
                 git add filtered-for-refiner.txt 2>/dev/null || true
                 git add latest_ip_configs.txt 2>/dev/null || true
                 git add premium_configs.txt 2>/dev/null || true
@@ -113,8 +153,14 @@ jobs:
                 git add validated_subscriptions.json 2>/dev/null || true
                 git add splitted/ protocols/ networks/ countries/ security/ flow/ 2>/dev/null || true
                 
-                git commit -m "✅ Automated Update ${TIMESTAMP} [retry ${attempt}]"
-              }
+                # SAFETY: Unstage .github again
+                git reset HEAD -- .github/ 2>/dev/null || true
+                
+                # Check if anything to commit
+                if ! git diff --cached --quiet; then
+                  git commit -m "✅ Automated Update ${TIMESTAMP} [retry ${attempt}]"
+                fi
+              fi
             fi
           done
           
