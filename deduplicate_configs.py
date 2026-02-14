@@ -3,10 +3,11 @@ import re
 import os
 import base64
 import json
-from datetime import datetime
-from urllib.parse import urlparse, unquote, quote
+import ipaddress
+from urllib.parse import urlparse, unquote, quote, parse_qs
 
-# Source files
+# --- CONFIGURATION ---
+OUTPUT_DIR = 'Hugs'
 SOURCES = [
     'https://raw.githubusercontent.com/BarimKenzema/Haj-Karim/refs/heads/main/latest_ip_configs.txt',
     'https://raw.githubusercontent.com/BarimKenzema/Haj-Karim/refs/heads/main/filtered-for-refiner.txt',
@@ -14,8 +15,29 @@ SOURCES = [
     'https://raw.githubusercontent.com/BarimKenzema/Final-Boss/refs/heads/main/active_sni_configs.txt'
 ]
 
-OUTPUT_FILES = ['Pre-Hugs-1.txt', 'Pre-Hugs-2.txt', 'Pre-Hugs-3.txt', 'Pre-Hugs-4.txt']
+# Output definitions
+ROTATING_FILES = ['Pre-Hugs-1.txt', 'Pre-Hugs-2.txt', 'Pre-Hugs-3.txt', 'Pre-Hugs-4.txt']
+CLOUDFLARE_FILE = 'CF-Configs.txt'
 COUNTER_FILE = '.rotation_counter'
+MAX_CF_CONFIGS = 4444
+
+# Blacklist terms (regex safe)
+BLACKLIST_DOMAINS = [r'\.navy', r'indevs\.in']
+
+# Cloudflare Definitions
+CLOUDFLARE_RANGES = [
+    '173.245.48.0/20', '103.21.244.0/22', '103.22.200.0/22', '103.31.4.0/22',
+    '141.101.64.0/18', '108.162.192.0/18', '190.93.240.0/20', '188.114.96.0/20',
+    '197.234.240.0/22', '198.41.128.0/17', '162.158.0.0/15', '104.16.0.0/13',
+    '104.24.0.0/14', '172.64.0.0/13', '131.0.72.0/22'
+]
+CLOUDFLARE_NETWORKS = [ipaddress.ip_network(cidr) for cidr in CLOUDFLARE_RANGES]
+CLOUDFLARE_DOMAINS = ['cloudflare.com', 'workers.dev', 'pages.dev', 'trycloudflare.com']
+
+def setup_environment():
+    """Ensure output directory exists."""
+    if not os.path.exists(OUTPUT_DIR):
+        os.makedirs(OUTPUT_DIR)
 
 def download_file(url):
     """Download content from URL."""
@@ -30,221 +52,268 @@ def download_file(url):
 def decode_subscription(content):
     """Decode base64 subscription if needed."""
     content = content.strip()
-    
-    # Check if content is base64 encoded (doesn't start with protocol://)
-    if not content.startswith(('vless://', 'vmess://', 'trojan://', 'ss://', 'hysteria://', 'hy2://')):
+    if not content.startswith(('vless://', 'vmess://', 'trojan://', 'hysteria://', 'hy2://')):
         try:
-            # Try to decode as base64
-            # Add padding if needed
             missing_padding = len(content) % 4
             if missing_padding:
                 content += '=' * (4 - missing_padding)
-            
             decoded = base64.b64decode(content).decode('utf-8')
-            print(f"    ℹ️  Decoded base64 subscription")
             return decoded
         except:
-            # If decode fails, return as-is
             pass
-    
     return content
 
-def extract_server_port(config_line):
-    """Extract server:port from v2ray config for deduplication."""
-    config_line = config_line.strip()
+def get_config_details(config):
+    """
+    Parses a config line and returns a dictionary with:
+    { 'address': str, 'port': str, 'sni': str, 'host': str }
+    Returns None if parsing fails.
+    """
+    details = {'address': '', 'port': '', 'sni': '', 'host': ''}
     
-    # vless:// or trojan://
-    if config_line.startswith(('vless://', 'trojan://', 'hysteria://', 'hy2://')):
-        try:
-            # Format: protocol://uuid@server:port?params#name
-            match = re.search(r'@([^:?#]+):(\d+)', config_line)
-            if match:
-                return f"{match.group(1)}:{match.group(2)}"
-        except:
-            pass
-    
-    # vmess://
-    elif config_line.startswith('vmess://'):
-        try:
-            # Decode base64
-            b64_part = config_line.replace('vmess://', '').split('#')[0]
-            # Add padding if needed
+    try:
+        if config.startswith('vmess://'):
+            b64_part = config.replace('vmess://', '').split('#')[0]
             missing_padding = len(b64_part) % 4
             if missing_padding:
                 b64_part += '=' * (4 - missing_padding)
+            data = json.loads(base64.b64decode(b64_part).decode('utf-8'))
             
-            decoded = base64.b64decode(b64_part).decode('utf-8')
-            vmess_data = json.loads(decoded)
-            return f"{vmess_data.get('add', '')}:{vmess_data.get('port', '')}"
-        except:
-            pass
+            details['address'] = data.get('add', '')
+            details['port'] = str(data.get('port', ''))
+            details['sni'] = data.get('sni', '')
+            details['host'] = data.get('host', '')
+            
+        elif config.startswith(('vless://', 'trojan://', 'hysteria://', 'hy2://')):
+            parsed = urlparse(config)
+            params = parse_qs(parsed.query)
+            
+            details['address'] = parsed.hostname or ''
+            details['port'] = str(parsed.port) if parsed.port else ''
+            details['sni'] = params.get('sni', [''])[0]
+            details['host'] = params.get('host', [''])[0]
+            
+        else:
+            return None
+            
+    except:
+        return None
+        
+    return details
+
+def is_blacklisted(details):
+    """Check if config contains forbidden domains."""
+    if not details: return True
     
-    # ss:// (shadowsocks)
-    elif config_line.startswith('ss://'):
-        try:
-            # Format: ss://base64@server:port#name or ss://method:password@server:port#name
-            match = re.search(r'@([^:?#]+):(\d+)', config_line)
-            if match:
-                return f"{match.group(1)}:{match.group(2)}"
-        except:
-            pass
+    check_string = f"{details['address']} {details['sni']} {details['host']}".lower()
     
-    # If can't parse, use entire line as unique identifier
-    return config_line
+    for pattern in BLACKLIST_DOMAINS:
+        if re.search(pattern, check_string):
+            return True
+    return False
+
+def is_cloudflare(details):
+    """Check if config is using Cloudflare."""
+    if not details: return False
+    
+    # Check Address (IP or Domain)
+    address = details['address']
+    
+    # Check if address is IP and in CF ranges
+    try:
+        ip = ipaddress.ip_address(address)
+        for network in CLOUDFLARE_NETWORKS:
+            if ip in network:
+                return True
+    except ValueError:
+        # Check if address domain is CF
+        if any(d in address.lower() for d in CLOUDFLARE_DOMAINS):
+            return True
+
+    # Check SNI/Host for CF domains
+    check_fields = [details['sni'].lower(), details['host'].lower()]
+    for field in check_fields:
+        if any(d in field for d in CLOUDFLARE_DOMAINS):
+            return True
+            
+    return False
 
 def rename_config(config_line):
-    """Rename config according to new pattern."""
-    # Extract the remark/name part (after #)
-    if '#' not in config_line:
-        return config_line
+    """Rename config according to pattern."""
+    if '#' not in config_line: return config_line
     
     protocol_part, name_part = config_line.rsplit('#', 1)
-    name_part = unquote(name_part)  # Decode URL encoding
+    name_part = unquote(name_part)
     
-    # Pattern 1: Flag emoji + @MoboNetPC + Flag emoji → Flag + Support 👉 @MoboNetPC + Flag
-    # Example: 🇹🇷 @MoboNetPC 🇹🇷 → 🇹🇷 Support 👉 @MoboNetPC 🇹🇷
-    pattern1_flag = re.match(r'^([\U0001F1E6-\U0001F1FF]{2})\s*@MoboNetPC\s*([\U0001F1E6-\U0001F1FF]{2})$', name_part)
-    if pattern1_flag:
-        flag = pattern1_flag.group(1)
-        new_name = f"{flag} Support 👉 @MoboNetPC {flag}"
-        return f"{protocol_part}#{quote(new_name, safe='')}"
+    patterns = [
+        (r'^([\U0001F1E6-\U0001F1FF]{2})\s*@MoboNetPC\s*([\U0001F1E6-\U0001F1FF]{2})$', r"\1 Support 👉 @MoboNetPC \2"),
+        (r'^🔓\s*@MoboNetPC\s*🔓$', "🔓 Support 👉 @MoboNetPC 🔓"),
+        (r'^([\U0001F1E6-\U0001F1FF]{2})\s*@VPNProxyTest\s*([\U0001F1E6-\U0001F1FF]{2})$', r"\1 پشتیبانی 👉 @VPNProxyTest \2"),
+        (r'^🔓\s*@VPNProxyTest\s*🔓$', "🔓 پشتیبانی 👉 @VPNProxyTest 🔓")
+    ]
     
-    # Pattern 2: 🔓 @MoboNetPC 🔓 → 🔓 Support 👉 @MoboNetPC 🔓
-    pattern1_lock = re.match(r'^🔓\s*@MoboNetPC\s*🔓$', name_part)
-    if pattern1_lock:
-        new_name = "🔓 Support 👉 @MoboNetPC 🔓"
-        return f"{protocol_part}#{quote(new_name, safe='')}"
-    
-    # Pattern 3: Flag emoji + @VPNProxyTest + Flag emoji → Flag + پشتیبانی 👉 @VPNProxyTest + Flag
-    # Example: 🇹🇷 @VPNProxyTest 🇹🇷 → 🇹🇷 پشتیبانی 👉 @VPNProxyTest 🇹🇷
-    pattern2_flag = re.match(r'^([\U0001F1E6-\U0001F1FF]{2})\s*@VPNProxyTest\s*([\U0001F1E6-\U0001F1FF]{2})$', name_part)
-    if pattern2_flag:
-        flag = pattern2_flag.group(1)
-        new_name = f"{flag} پشتیبانی 👉 @VPNProxyTest {flag}"
-        return f"{protocol_part}#{quote(new_name, safe='')}"
-    
-    # Pattern 4: 🔓 @VPNProxyTest 🔓 → 🔓 پشتیبانی 👉 @VPNProxyTest 🔓
-    pattern2_lock = re.match(r'^🔓\s*@VPNProxyTest\s*🔓$', name_part)
-    if pattern2_lock:
-        new_name = "🔓 پشتیبانی 👉 @VPNProxyTest 🔓"
-        return f"{protocol_part}#{quote(new_name, safe='')}"
-    
-    # If no pattern matches, return original
+    for pat, repl in patterns:
+        if re.match(pat, name_part):
+            new_name = re.sub(pat, repl, name_part)
+            return f"{protocol_part}#{quote(new_name, safe='')}"
+            
     return config_line
 
-def get_next_output_file():
-    """Get the next output file using rotation counter."""
-    # Read current counter
-    if os.path.exists(COUNTER_FILE):
+def manage_cloudflare_file(new_configs):
+    """Accumulate CF configs, deduplicate, and cap at limit."""
+    file_path = os.path.join(OUTPUT_DIR, CLOUDFLARE_FILE)
+    existing_configs = []
+    
+    # Load existing
+    if os.path.exists(file_path):
         try:
-            with open(COUNTER_FILE, 'r') as f:
-                counter = int(f.read().strip())
-        except:
-            counter = 0
+            with open(file_path, 'r', encoding='utf-8') as f:
+                content = f.read().strip()
+                if content:
+                    # Decode if stored as base64 list (optional safety)
+                    if not content.startswith(('vless://', 'vmess://')):
+                        try:
+                            content = base64.b64decode(content).decode('utf-8')
+                        except: pass
+                    existing_configs = content.splitlines()
+        except Exception as e:
+            print(f"⚠️ Error reading existing CF file: {e}")
+
+    # Combine Old + New
+    # We want new configs to replace old ones if we hit the limit.
+    # Strategy: Append new to old, then keep the *last* MAX_CF_CONFIGS
+    # But we must deduplicate first.
+    
+    combined = existing_configs + new_configs
+    
+    # Deduplicate (Keep last occurrence to ensure freshness)
+    seen = set()
+    unique_list = []
+    for cfg in reversed(combined): # Process from newest to oldest
+        # Use simple string check or server:port logic
+        details = get_config_details(cfg)
+        key = f"{details['address']}:{details['port']}" if details else cfg
+        
+        if key not in seen:
+            seen.add(key)
+            unique_list.append(cfg)
+    
+    # Revert to chronological order (Oldest -> Newest)
+    unique_list.reverse()
+    
+    # Cap at limit (Keep the tail/newest)
+    if len(unique_list) > MAX_CF_CONFIGS:
+        final_list = unique_list[-MAX_CF_CONFIGS:]
     else:
-        counter = 0
+        final_list = unique_list
+        
+    # Write back
+    with open(file_path, 'w', encoding='utf-8') as f:
+        f.write('\n'.join(final_list))
     
-    # Get current file
-    current_file = OUTPUT_FILES[counter]
+    return len(final_list)
+
+def get_next_rotation_file():
+    """Determine the next file for non-CF configs."""
+    counter_path = COUNTER_FILE
     
-    # Increment counter for next time (wrap around after 4)
-    next_counter = (counter + 1) % 4
+    counter = 0
+    if os.path.exists(counter_path):
+        try:
+            with open(counter_path, 'r') as f:
+                counter = int(f.read().strip())
+        except: pass
+        
+    current_file = ROTATING_FILES[counter]
+    next_counter = (counter + 1) % len(ROTATING_FILES)
     
-    # Save next counter
-    with open(COUNTER_FILE, 'w') as f:
+    with open(counter_path, 'w') as f:
         f.write(str(next_counter))
-    
-    print(f"🔄 Using rotation slot {counter + 1}/4: '{current_file}'")
-    
-    return current_file
+        
+    return os.path.join(OUTPUT_DIR, current_file)
 
 def main():
+    setup_environment()
     print("="*60)
-    print("🔄 V2RAY CONFIG DEDUPLICATOR & RENAMER")
+    print("🔄 ADVANCED V2RAY CONFIG PROCESSOR")
     print("="*60)
     
-    # Step 1: Download all source files
-    print("\n📥 Downloading source files...")
-    all_configs = []
-    
+    # 1. Download & Clean
+    raw_configs = []
     for url in SOURCES:
-        print(f"  • {url.split('/')[-1]}...", end=" ")
+        print(f"📥 Fetching: {url.split('/')[-1]}...", end=" ")
         content = download_file(url)
+        decoded = decode_subscription(content)
+        lines = [line.strip() for line in decoded.splitlines() if line.strip()]
         
-        if content:
-            # Try to decode if base64
-            decoded_content = decode_subscription(content)
-            
-            # Split by newlines and filter empty lines
-            lines = [line.strip() for line in decoded_content.split('\n') if line.strip()]
-            
-            # Filter only valid config lines (starting with known protocols)
-            valid_configs = [
-                line for line in lines 
-                if line.startswith(('vless://', 'vmess://', 'trojan://', 'ss://', 'hysteria://', 'hy2://'))
-            ]
-            
-            all_configs.extend(valid_configs)
-            print(f"✅ {len(valid_configs)} configs")
-        else:
-            print("❌ Failed")
-    
-    print(f"\n📊 Total configs downloaded: {len(all_configs)}")
-    
-    if len(all_configs) == 0:
-        print("❌ No configs found! Exiting.")
+        # Initial Protocol Filter (Exclude Shadowsocks)
+        valid = [l for l in lines if l.startswith(('vless://', 'vmess://', 'trojan://', 'hysteria://', 'hy2://'))]
+        raw_configs.extend(valid)
+        print(f"Found {len(valid)}")
+
+    if not raw_configs:
+        print("❌ No configs found.")
         return
+
+    # 2. Process: Deduplicate, Filter Blacklist, Separate CF/Non-CF
+    print("\n🔍 Processing configs...")
     
-    # Step 2: Deduplicate based on server:port
-    print("\n🔍 Deduplicating...")
-    seen_servers = {}
-    unique_configs = []
+    seen_keys = set()
+    cf_batch = []
+    non_cf_batch = []
     
-    for config in all_configs:
-        server_port = extract_server_port(config)
-        if server_port not in seen_servers:
-            seen_servers[server_port] = config
-            unique_configs.append(config)
+    ignored_ss = 0
+    ignored_blacklist = 0
     
-    print(f"✅ Unique configs after deduplication: {len(unique_configs)}")
-    print(f"🗑️  Duplicates removed: {len(all_configs) - len(unique_configs)}")
+    for config in raw_configs:
+        # Deduplication Key (Server:Port)
+        details = get_config_details(config)
+        
+        if not details: 
+            continue
+            
+        # Deduplicate
+        key = f"{details['address']}:{details['port']}"
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+        
+        # Blacklist Check (.navy, indevs.in)
+        if is_blacklisted(details):
+            ignored_blacklist += 1
+            continue
+            
+        # Rename
+        renamed_config = rename_config(config)
+        
+        # Classify
+        if is_cloudflare(details):
+            cf_batch.append(renamed_config)
+        else:
+            non_cf_batch.append(renamed_config)
+
+    # 3. Save Cloudflare Configs (Accumulate)
+    print(f"\n☁️  Cloudflare Configs found in batch: {len(cf_batch)}")
+    total_cf = manage_cloudflare_file(cf_batch)
+    print(f"   ↳ Saved to {OUTPUT_DIR}/{CLOUDFLARE_FILE} (Total Accumulated: {total_cf})")
+
+    # 4. Save Non-Cloudflare Configs (Rotate)
+    print(f"\n🌍 Non-Cloudflare Configs found: {len(non_cf_batch)}")
+    target_file = get_next_rotation_file()
     
-    # Step 3: Rename configs
-    print("\n✏️  Renaming configs...")
-    renamed_configs = []
-    renamed_count = 0
-    
-    for config in unique_configs:
-        renamed = rename_config(config)
-        if renamed != config:
-            renamed_count += 1
-        renamed_configs.append(renamed)
-    
-    print(f"✅ Configs renamed: {renamed_count}")
-    
-    # Step 4: Get next output file (with rotation)
-    print("\n📁 Determining output file...")
-    output_file = get_next_output_file()
-    
-    # Step 5: Write to file
-    print(f"\n💾 Writing {len(renamed_configs)} configs to '{output_file}'...")
-    
-    with open(output_file, 'w', encoding='utf-8') as f:
-        f.write('\n'.join(renamed_configs))
-    
-    print(f"✅ Successfully written to '{output_file}'")
-    
+    with open(target_file, 'w', encoding='utf-8') as f:
+        f.write('\n'.join(non_cf_batch))
+    print(f"   ↳ Saved to {target_file}")
+
     # Summary
     print("\n" + "="*60)
     print("📊 SUMMARY")
     print("="*60)
-    print(f"Total Downloaded:     {len(all_configs)}")
-    print(f"After Deduplication:  {len(unique_configs)}")
-    print(f"Configs Renamed:      {renamed_count}")
-    print(f"Output File:          {output_file}")
-    print(f"Final Count:          {len(renamed_configs)}")
+    print(f"Total Unique Processed: {len(seen_keys)}")
+    print(f"⛔ Ignored (Blacklist): {ignored_blacklist}")
+    print(f"☁️  Cloudflare (New):   {len(cf_batch)}")
+    print(f"🌍 Non-CF (Saved):     {len(non_cf_batch)}")
     print("="*60)
-    print("✅ Process completed successfully!")
 
 if __name__ == "__main__":
     main()
