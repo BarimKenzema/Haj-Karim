@@ -22,7 +22,7 @@ CF_MAX_CONFIGS = 4444
 COUNTER_FILE = '.rotation_counter'
 
 # Blacklisted patterns (will be excluded)
-BLACKLIST_PATTERNS = ['.navy', 'indevs.in', 'fuck.rkn' ]
+BLACKLIST_PATTERNS = ['.navy', 'indevs.in', 'fuck.rkn', 'dynv6.net' ]
 
 # Cloudflare IP ranges
 CLOUDFLARE_IP_RANGES = [
