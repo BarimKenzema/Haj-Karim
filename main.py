@@ -1,11 +1,11 @@
 import os, json, re, base64, time, traceback, socket, ipaddress
 import requests
-from urllib.parse import urlparse, parse_qs, quote, urlencode, urlunparse
+from urllib.parse import urlparse, parse_qs, quote, urlencode
 import concurrent.futures
 import geoip2.database
 from dns import resolver
 
-print("--- GITHUB COLLECTOR v45.2 (Flow Detection + Premium Filtering + FIXED) START ---")
+print("--- GITHUB COLLECTOR v46.0 (Unified Database + Simplified) START ---")
 
 # --- CONFIGURATION ---
 CONFIG_CHUNK_SIZE = 44444
@@ -14,20 +14,14 @@ COLLECTOR_TOKEN = os.environ.get('COLLECTOR_TOKEN')
 VALIDATED_LINKS_FILE = 'validated_subscriptions.json'
 
 # Database configuration
-DATABASE_SNI_BASE = 'database_sni'
-DATABASE_IP_BASE = 'database_ip'
-ACTIVE_FILE_SNI = 'filtered-for-refiner.txt'
-ACTIVE_FILE_IP = 'latest_ip_configs.txt'
-PREMIUM_FILE = 'premium_configs.txt'
-MAX_ACTIVE_CONFIGS = 4444
-MAX_PREMIUM_CONFIGS = 500
+DATABASE_DIR = './database'
+DATABASE_BASE_NAME = 'Database'
 MAX_DB_SIZE_MB = 44
-MAX_DB_FILES_TO_KEEP = 4
+MAX_DB_FILES = 7
 
-# --- PREFERRED SETTINGS (for Iran) ---
-PREFERRED_FLOWS = ['xtls-rprx-vision', 'xtls-rprx-vision-udp443']
-PREFERRED_SECURITY = ['reality', 'tls']
-PREFERRED_NETWORKS = ['tcp', 'grpc', 'h2']
+# Active file
+ACTIVE_FILE = 'latest_configs.txt'
+MAX_ACTIVE_CONFIGS = 4444
 
 # --- SHARED CACHING & GLOBALS ---
 dns_cache = {}
@@ -76,383 +70,164 @@ COUNTRY_FLAGS = {
 # =========================
 
 def sanitize_filename(name):
-    """
-    Sanitize a string to be safe for use as a filename.
-    Removes or replaces invalid characters for filesystems.
-    """
+    """Sanitize a string to be safe for use as a filename."""
     if not name:
         return 'unknown'
     
-    # Remove or replace invalid filename characters
     name = re.sub(r'[<>:"/\\|?*&=]', '_', name)
-    
-    # Remove control characters
     name = re.sub(r'[\x00-\x1f\x7f]', '', name)
-    
-    # Replace multiple underscores/spaces with single underscore
     name = re.sub(r'[_\s]+', '_', name)
-    
-    # Remove leading/trailing underscores, dots, and spaces
     name = name.strip('._\t\n\r ')
     
-    # Limit length
     if len(name) > 100:
         name = name[:100].rstrip('._')
     
-    # If empty after sanitization, use default
     if not name:
         name = 'unknown'
     
     return name.lower()
 
 # =========================
-# Flow & Quality Detection
+# Database Management (Unified)
 # =========================
 
-def extract_flow_setting(config_str):
-    """Extract the 'flow' setting from a config."""
-    try:
-        if config_str.startswith('vmess://'):
-            return None
-        
-        elif config_str.startswith('vless://'):
-            parsed = urlparse(config_str)
-            params = parse_qs(parsed.query)
-            flow = params.get('flow', [''])[0].strip().lower()
-            return flow if flow else None
-        
-        elif config_str.startswith('trojan://'):
-            parsed = urlparse(config_str)
-            params = parse_qs(parsed.query)
-            flow = params.get('flow', [''])[0].strip().lower()
-            return flow if flow else None
-        
-        return None
-    except Exception:
-        return None
+def ensure_database_dir():
+    """Ensure database directory exists."""
+    if not os.path.exists(DATABASE_DIR):
+        os.makedirs(DATABASE_DIR)
+        print(f"📁 Created database directory: {DATABASE_DIR}")
 
-def calculate_config_quality_score(config_str):
-    """Calculate a quality score for a config based on censorship resistance."""
-    score = 0
-    
-    try:
-        flow = extract_flow_setting(config_str)
-        if flow:
-            if 'xtls-rprx-vision' in flow:
-                score += 50
-            elif 'xtls' in flow:
-                score += 30
-        
-        attrs = get_config_attributes(config_str)
-        if not attrs:
-            return score
-        
-        security = attrs.get('security', 'none').lower()
-        if security == 'reality':
-            score += 40
-        elif security == 'tls':
-            score += 20
-        elif security == 'xtls':
-            score += 35
-        
-        protocol = attrs.get('protocol', '').lower()
-        if protocol == 'vless':
-            score += 15
-        elif protocol == 'trojan':
-            score += 10
-        elif protocol == 'vmess':
-            score += 5
-        
-        network = attrs.get('network', 'tcp').lower()
-        if network == 'tcp':
-            score += 10
-        elif network == 'grpc':
-            score += 8
-        elif network == 'h2':
-            score += 7
-        elif network == 'ws':
-            score += 5
-        
-        try:
-            if config_str.startswith('vmess://'):
-                vmess_data = parse_vmess_config(config_str)
-                port = int(vmess_data.get('port', 0)) if vmess_data else 0
-            else:
-                parsed = urlparse(config_str)
-                port = parsed.port or 0
-            
-            if port in [443, 8443, 2053, 2083, 2087, 2096]:
-                score += 5
-        except:
-            pass
-        
-        return score
-    
-    except Exception:
-        return score
-
-def is_premium_config(config_str):
-    """Check if a config is premium (best for Iran censorship)."""
-    try:
-        flow = extract_flow_setting(config_str)
-        attrs = get_config_attributes(config_str)
-        
-        if not attrs:
-            return False
-        
-        security = attrs.get('security', 'none').lower()
-        protocol = attrs.get('protocol', '').lower()
-        
-        has_good_flow = flow and 'xtls-rprx-vision' in flow
-        is_vless = protocol == 'vless'
-        
-        if is_vless and security == 'reality' and has_good_flow:
-            return True
-        
-        if is_vless and security == 'tls' and has_good_flow:
-            return True
-        
-        return False
-    
-    except Exception:
-        return False
-
-def filter_premium_configs(configs):
-    """Filter and sort configs by quality, returning premium ones first."""
-    scored_configs = []
-    
-    for config in configs:
-        score = calculate_config_quality_score(config)
-        is_premium = is_premium_config(config)
-        scored_configs.append({
-            'config': config,
-            'score': score,
-            'is_premium': is_premium
-        })
-    
-    scored_configs.sort(key=lambda x: x['score'], reverse=True)
-    
-    premium = [x['config'] for x in scored_configs if x['is_premium']]
-    all_sorted = [x['config'] for x in scored_configs]
-    
-    return premium, all_sorted
-
-# =========================
-# Database Cleanup & Management
-# =========================
-
-def cleanup_old_database_files(base_name, keep_latest=MAX_DB_FILES_TO_KEEP):
-    """Keep only the N most recent database files."""
-    files = get_database_files(base_name)
-    
-    if len(files) <= keep_latest:
-        return
-    
-    to_delete = files[:-keep_latest] if len(files) > keep_latest else []
-    
-    deleted_count = 0
-    for file_path in to_delete:
-        try:
-            size_mb = os.path.getsize(file_path) / (1024 * 1024)
-            os.remove(file_path)
-            print(f"  🗑️  Removed old database: {file_path} ({size_mb:.2f}MB)")
-            deleted_count += 1
-        except Exception as e:
-            print(f"  ⚠️  Could not remove {file_path}: {e}")
-    
-    if deleted_count > 0:
-        print(f"  ✅ Cleaned up {deleted_count} old database file(s) for {base_name}")
-
-def get_database_files(base_name):
-    """Get all database files for a base name."""
+def get_database_files():
+    """Get all database files sorted by number."""
+    ensure_database_dir()
     files = []
-    base_file = f"{base_name}.txt"
-    if os.path.exists(base_file):
-        files.append(base_file)
-    i = 2
-    while True:
-        numbered_file = f"{base_name}_{i}.txt"
-        if os.path.exists(numbered_file):
-            files.append(numbered_file)
-            i += 1
-        else:
-            break
+    for i in range(1, MAX_DB_FILES + 1):
+        filepath = os.path.join(DATABASE_DIR, f"{DATABASE_BASE_NAME}_{i}.txt")
+        if os.path.exists(filepath):
+            files.append(filepath)
     return files
 
-def get_current_database_file(base_name):
-    """Get the current active database file."""
-    files = get_database_files(base_name)
+def get_current_database_file():
+    """Get the current active database file (last one or create first)."""
+    files = get_database_files()
     if not files:
-        return f"{base_name}.txt"
+        return os.path.join(DATABASE_DIR, f"{DATABASE_BASE_NAME}_1.txt")
     return files[-1]
 
-def load_database(db_file):
+def get_next_database_file(current_file):
+    """Get next database file in rotation."""
+    current_name = os.path.basename(current_file)
+    match = re.search(r'_(\d+)\.txt$', current_name)
+    if match:
+        current_num = int(match.group(1))
+        next_num = (current_num % MAX_DB_FILES) + 1
+        return os.path.join(DATABASE_DIR, f"{DATABASE_BASE_NAME}_{next_num}.txt")
+    return os.path.join(DATABASE_DIR, f"{DATABASE_BASE_NAME}_1.txt")
+
+def load_database_file(filepath):
     """Load a single database file (base64 encoded)."""
-    if not os.path.exists(db_file):
+    if not os.path.exists(filepath):
         return set()
     try:
-        with open(db_file, 'r', encoding='utf-8') as f:
+        with open(filepath, 'r', encoding='utf-8') as f:
             content = f.read().strip()
             if not content:
                 return set()
             decoded = base64.b64decode(content).decode('utf-8')
             return set(decoded.splitlines())
     except Exception as e:
-        print(f"Warning: Could not load {db_file}: {e}")
+        print(f"Warning: Could not load {filepath}: {e}")
         return set()
 
-def load_all_databases(base_name):
+def load_all_databases():
     """Load configs from ALL database files."""
     all_configs = set()
-    files = get_database_files(base_name)
+    files = get_database_files()
     
     if not files:
-        print(f"  No database files found for {base_name}")
+        print(f"  No database files found in {DATABASE_DIR}")
         return all_configs
     
     print(f"  Loading from {len(files)} database file(s):")
     for db_file in files:
-        configs = load_database(db_file)
+        configs = load_database_file(db_file)
         all_configs.update(configs)
-        size_mb = os.path.getsize(db_file) / (1024 * 1024) if os.path.exists(db_file) else 0
-        print(f"    • {db_file}: {len(configs)} configs ({size_mb:.2f} MB)")
+        size_mb = os.path.getsize(db_file) / (1024 * 1024)
+        print(f"    • {os.path.basename(db_file)}: {len(configs)} configs ({size_mb:.2f} MB)")
     
     return all_configs
 
-def save_database(db_file, configs_set):
-    """Save configs to a single database file (base64 encoded)."""
-    try:
-        content = "\n".join(sorted(configs_set))
-        encoded = base64.b64encode(content.encode('utf-8')).decode('utf-8')
-        with open(db_file, 'w', encoding='utf-8') as f:
-            f.write(encoded)
-    except Exception as e:
-        print(f"Error saving {db_file}: {e}")
-
-def save_database_smart(base_name, new_configs_list):
-    """Smart save with size management."""
+def save_database(new_configs_list):
+    """Save new configs to database with rotation."""
     if not new_configs_list:
         return None
     
-    current_file = get_current_database_file(base_name)
-    existing = load_database(current_file) if os.path.exists(current_file) else set()
+    ensure_database_dir()
+    current_file = get_current_database_file()
+    
+    # Load existing from current file only
+    existing = load_database_file(current_file)
     combined = existing.union(set(new_configs_list))
     
-    test_content = "\n".join(sorted(combined))
-    test_encoded = base64.b64encode(test_content.encode('utf-8')).decode('utf-8')
-    test_size_mb = len(test_encoded.encode('utf-8')) / (1024 * 1024)
+    # Prepare content
+    content = "\n".join(sorted(combined))
+    encoded = base64.b64encode(content.encode('utf-8')).decode('utf-8')
+    size_mb = len(encoded.encode('utf-8')) / (1024 * 1024)
     
-    if test_size_mb > MAX_DB_SIZE_MB and existing:
-        if "_" in current_file:
-            base_part = current_file.rsplit("_", 1)[0]
-            num_part = current_file.rsplit("_", 1)[1].replace(".txt", "")
-            try:
-                current_num = int(num_part)
-                next_file = f"{base_part}_{current_num + 1}.txt"
-            except:
-                next_file = f"{base_name}_2.txt"
-        else:
-            next_file = f"{base_name}_2.txt"
+    # Check if rotation needed
+    if size_mb > MAX_DB_SIZE_MB and existing:
+        next_file = get_next_database_file(current_file)
+        print(f"  ⚠️  {os.path.basename(current_file)} would be {size_mb:.2f}MB (limit: {MAX_DB_SIZE_MB}MB)")
+        print(f"  🔄 Rotating to: {os.path.basename(next_file)}")
         
-        print(f"  ⚠️  {current_file} would be {test_size_mb:.2f}MB (limit: {MAX_DB_SIZE_MB}MB)")
-        print(f"  ✅ Creating new database file: {next_file}")
+        # Save only new configs to next file
+        new_content = "\n".join(sorted(new_configs_list))
+        new_encoded = base64.b64encode(new_content.encode('utf-8')).decode('utf-8')
         
-        save_database(next_file, set(new_configs_list))
+        with open(next_file, 'w', encoding='utf-8') as f:
+            f.write(new_encoded)
+        
+        new_size_mb = len(new_encoded.encode('utf-8')) / (1024 * 1024)
+        print(f"  ✅ Saved {len(new_configs_list)} configs to {os.path.basename(next_file)} ({new_size_mb:.2f}MB)")
         return next_file
     else:
-        save_database(current_file, combined)
-        print(f"  ✅ Updated {current_file} ({test_size_mb:.2f}MB, {len(combined)} total configs)")
+        with open(current_file, 'w', encoding='utf-8') as f:
+            f.write(encoded)
+        print(f"  ✅ Updated {os.path.basename(current_file)} ({size_mb:.2f}MB, {len(combined)} total configs)")
         return current_file
 
-def save_active_file(filepath, configs_list, max_configs=MAX_ACTIVE_CONFIGS):
+# =========================
+# Active File Management
+# =========================
+
+def save_active_file(configs_list):
     """Save active file (base64 encoded, capped)."""
     try:
-        configs_to_save = configs_list[-max_configs:] if len(configs_list) > max_configs else configs_list
+        configs_to_save = configs_list[-MAX_ACTIVE_CONFIGS:] if len(configs_list) > MAX_ACTIVE_CONFIGS else configs_list
         content = "\n".join(configs_to_save)
         encoded = base64.b64encode(content.encode('utf-8')).decode('utf-8')
-        with open(filepath, 'w', encoding='utf-8') as f:
+        with open(ACTIVE_FILE, 'w', encoding='utf-8') as f:
             f.write(encoded)
         return len(configs_to_save)
     except Exception as e:
-        print(f"Error saving {filepath}: {e}")
+        print(f"Error saving {ACTIVE_FILE}: {e}")
         return 0
 
-def load_list_from_file(filepath):
-    """Load a list from base64 encoded file."""
-    if not os.path.exists(filepath): 
+def load_active_file():
+    """Load active file."""
+    if not os.path.exists(ACTIVE_FILE):
         return []
     try:
-        with open(filepath, 'r') as f:
+        with open(ACTIVE_FILE, 'r') as f:
             content = f.read()
-            if content: 
+            if content:
                 return base64.b64decode(content).decode('utf-8').splitlines()
     except Exception as e:
-        print(f"Error loading {filepath}: {e}")
-        return []
+        print(f"Error loading {ACTIVE_FILE}: {e}")
     return []
 
-def merge_active_by_fingerprint(existing_list, new_list, max_configs=MAX_ACTIVE_CONFIGS):
-    """Merge existing + new, deduplicate, cap to newest."""
-    combined = existing_list + new_list
-    seen = set()
-    dedup_rev = []
-    for cfg in reversed(combined):
-        fp = get_config_fingerprint(cfg)
-        key = fp if fp else f"RAW::{cfg}"
-        if key not in seen:
-            dedup_rev.append(cfg)
-            seen.add(key)
-    dedup = list(reversed(dedup_rev))
-    if len(dedup) > max_configs:
-        dedup = dedup[-max_configs:]
-    return dedup
-
-# =========================
-# Resolution & parsing
-# =========================
-def country_code_to_flag(iso_code):
-    return COUNTRY_FLAGS.get(iso_code, "🌐")
-
-def resolve_domain_to_ip(hostname):
-    if not hostname:
-        return None
-    try:
-        ipaddress.ip_address(hostname)
-        return hostname
-    except ValueError:
-        pass
-    if hostname in dns_cache:
-        return dns_cache[hostname]
-    try:
-        res = resolver.Resolver()
-        res.nameservers = ["8.8.8.8", "1.1.1.1"]
-        ip_addr = res.resolve(hostname, 'A')[0].to_text()
-        dns_cache[hostname] = ip_addr
-        return ip_addr
-    except Exception:
-        dns_cache[hostname] = None
-        return None
-
-def parse_vmess_config(config_str):
-    try:
-        encoded = config_str.replace('vmess://', '').strip().rstrip('.,;!?')
-        missing_padding = len(encoded) % 4
-        if missing_padding:
-            encoded += '=' * (4 - missing_padding)
-        decoded_bytes = base64.b64decode(encoded, validate=True)
-        for encoding in ['utf-8', 'latin-1', 'iso-8859-1', 'cp1252']:
-            try:
-                decoded = decoded_bytes.decode(encoding, errors='ignore')
-                parsed = json.loads(decoded)
-                if 'add' in parsed and 'port' in parsed and 'id' in parsed:
-                    return parsed
-            except Exception:
-                continue
-        return None
-    except Exception:
-        return None
-
 def get_config_fingerprint(config_str):
+    """Get unique fingerprint for deduplication."""
     try:
         if config_str.startswith('vmess://'):
             vmess_data = parse_vmess_config(config_str)
@@ -480,116 +255,207 @@ def get_config_fingerprint(config_str):
     except Exception:
         return None
 
-def replace_address_with_sni(config_str):
+def merge_configs_by_fingerprint(existing_list, new_list):
+    """Merge existing + new, deduplicate, cap to newest."""
+    combined = existing_list + new_list
+    seen = set()
+    dedup_rev = []
+    for cfg in reversed(combined):
+        fp = get_config_fingerprint(cfg)
+        key = fp if fp else f"RAW::{cfg}"
+        if key not in seen:
+            dedup_rev.append(cfg)
+            seen.add(key)
+    dedup = list(reversed(dedup_rev))
+    if len(dedup) > MAX_ACTIVE_CONFIGS:
+        dedup = dedup[-MAX_ACTIVE_CONFIGS:]
+    return dedup
+
+# =========================
+# DNS Resolution & Parsing
+# =========================
+
+def country_code_to_flag(iso_code):
+    return COUNTRY_FLAGS.get(iso_code, "🌐")
+
+def is_ip_address(hostname):
+    """Check if hostname is an IP address."""
+    if not hostname:
+        return False
     try:
-        if config_str.startswith('vmess://'):
-            vmess_data = parse_vmess_config(config_str)
-            if not vmess_data:
-                return config_str
-            sni = vmess_data.get('sni', '').strip()
-            host = vmess_data.get('host', '').strip()
-            current_addr = vmess_data.get('add', '').strip()
-            new_addr = sni or host
-            if new_addr and new_addr != current_addr:
-                vmess_data['add'] = new_addr
-                new_json = json.dumps(vmess_data, separators=(',', ':'))
-                return f"vmess://{base64.b64encode(new_json.encode('utf-8')).decode('utf-8')}"
-            return config_str
-        elif config_str.startswith(('vless://', 'trojan://')):
-            parsed = urlparse(config_str)
-            params = parse_qs(parsed.query)
-            sni = params.get('sni', [''])[0].strip()
-            host = params.get('host', [''])[0].strip()
-            new_addr = sni or host
-            if new_addr and new_addr != (parsed.hostname or ''):
-                new_netloc = new_addr
-                try:
-                    if parsed.port:
-                        new_netloc = f"{new_addr}:{parsed.port}"
-                except:
-                    pass
-                if parsed.username:
-                    new_netloc = f"{parsed.username}@{new_netloc}"
-                return parsed._replace(netloc=new_netloc).geturl()
-            return config_str
-        return config_str
+        ipaddress.ip_address(hostname)
+        return True
+    except ValueError:
+        return False
+
+def resolve_domain_to_ip(hostname):
+    """Resolve domain to IP, return None if already IP or resolution fails."""
+    if not hostname:
+        return None
+    
+    # Already an IP - return as-is
+    if is_ip_address(hostname):
+        return hostname
+    
+    # Check cache
+    if hostname in dns_cache:
+        return dns_cache[hostname]
+    
+    # DNS resolution
+    try:
+        res = resolver.Resolver()
+        res.nameservers = ["8.8.8.8", "1.1.1.1"]
+        ip_addr = res.resolve(hostname, 'A')[0].to_text()
+        dns_cache[hostname] = ip_addr
+        return ip_addr
     except Exception:
-        return config_str
+        dns_cache[hostname] = None
+        return None
+
+def parse_vmess_config(config_str):
+    """Parse VMess config from base64."""
+    try:
+        encoded = config_str.replace('vmess://', '').strip().rstrip('.,;!?')
+        missing_padding = len(encoded) % 4
+        if missing_padding:
+            encoded += '=' * (4 - missing_padding)
+        decoded_bytes = base64.b64decode(encoded, validate=True)
+        for encoding in ['utf-8', 'latin-1', 'iso-8859-1', 'cp1252']:
+            try:
+                decoded = decoded_bytes.decode(encoding, errors='ignore')
+                parsed = json.loads(decoded)
+                if 'add' in parsed and 'port' in parsed and 'id' in parsed:
+                    return parsed
+            except Exception:
+                continue
+        return None
+    except Exception:
+        return None
 
 def replace_domain_with_ip(config_str):
+    """
+    Replace domain with IP address if the address is a domain.
+    Preserves original domain in SNI/host parameters.
+    If already IP, returns unchanged.
+    """
     try:
         if config_str.startswith('vmess://'):
             vmess_data = parse_vmess_config(config_str)
             if not vmess_data:
                 return config_str
-            domain = vmess_data.get('add', '')
-            ip_addr = resolve_domain_to_ip(domain)
-            if ip_addr and ip_addr != domain:
-                if vmess_data.get('tls') == 'tls' and not vmess_data.get('sni'):
-                    vmess_data['sni'] = domain
-                vmess_data['add'] = ip_addr
-                new_json = json.dumps(vmess_data, separators=(',', ':'))
-                return f"vmess://{base64.b64encode(new_json.encode('utf-8')).decode('utf-8')}"
-            return config_str
+            
+            address = vmess_data.get('add', '')
+            
+            # Already IP - no change needed
+            if is_ip_address(address):
+                return config_str
+            
+            # Resolve domain to IP
+            ip_addr = resolve_domain_to_ip(address)
+            if not ip_addr or ip_addr == address:
+                return config_str
+            
+            # Preserve original domain in SNI if TLS
+            if vmess_data.get('tls') == 'tls' and not vmess_data.get('sni'):
+                vmess_data['sni'] = address
+            
+            # Preserve original domain in host if WS/HTTP
+            net = vmess_data.get('net', '').lower()
+            if net in ['ws', 'http', 'h2'] and not vmess_data.get('host'):
+                vmess_data['host'] = address
+            
+            vmess_data['add'] = ip_addr
+            new_json = json.dumps(vmess_data, separators=(',', ':'))
+            return f"vmess://{base64.b64encode(new_json.encode('utf-8')).decode('utf-8')}"
+        
         elif config_str.startswith(('vless://', 'trojan://')):
             parsed = urlparse(config_str)
-            domain = parsed.hostname
-            if not domain:
+            hostname = parsed.hostname
+            
+            # Already IP - no change needed
+            if is_ip_address(hostname):
                 return config_str
-            ip_addr = resolve_domain_to_ip(domain)
-            if ip_addr and ip_addr != domain:
-                params = parse_qs(parsed.query)
-                security = params.get('security', [''])[0]
-                if security in ['tls', 'reality'] and 'sni' not in params:
-                    params['sni'] = [domain]
-                network_type = params.get('type', [''])[0]
-                if network_type in ['http', 'ws'] and 'host' not in params:
-                    params['host'] = [domain]
-                new_query = urlencode(params, doseq=True)
-                new_netloc = ip_addr
-                try:
-                    if parsed.port:
-                        new_netloc = f"{ip_addr}:{parsed.port}"
-                except:
-                    pass
-                if parsed.username:
-                    new_netloc = f"{parsed.username}@{new_netloc}"
-                return parsed._replace(netloc=new_netloc, query=new_query).geturl()
-            return config_str
+            
+            # Resolve domain to IP
+            ip_addr = resolve_domain_to_ip(hostname)
+            if not ip_addr or ip_addr == hostname:
+                return config_str
+            
+            params = parse_qs(parsed.query)
+            security = params.get('security', [''])[0]
+            network_type = params.get('type', [''])[0]
+            
+            # Preserve original domain in SNI for TLS/Reality
+            if security in ['tls', 'reality'] and 'sni' not in params:
+                params['sni'] = [hostname]
+            
+            # Preserve original domain in host for WS/HTTP
+            if network_type in ['ws', 'http', 'h2'] and 'host' not in params:
+                params['host'] = [hostname]
+            
+            new_query = urlencode(params, doseq=True)
+            new_netloc = ip_addr
+            try:
+                if parsed.port:
+                    new_netloc = f"{ip_addr}:{parsed.port}"
+            except:
+                pass
+            if parsed.username:
+                new_netloc = f"{parsed.username}@{new_netloc}"
+            
+            return parsed._replace(netloc=new_netloc, query=new_query).geturl()
+        
         elif config_str.startswith('ss://'):
             parts = config_str.split('@')
             if len(parts) != 2:
                 return config_str
+            
             prefix, suffix = parts[0], parts[1]
             fragment = ''
             if '#' in suffix:
                 suffix, fragment = suffix.split('#', 1)
                 fragment = f'#{fragment}'
-            domain, port = suffix.rsplit(':', 1) if ':' in suffix else (suffix, '443')
-            ip_addr = resolve_domain_to_ip(domain)
-            if ip_addr and ip_addr != domain:
+            
+            if ':' in suffix:
+                hostname, port = suffix.rsplit(':', 1)
+            else:
+                hostname, port = suffix, '443'
+            
+            # Already IP - no change needed
+            if is_ip_address(hostname):
+                return config_str
+            
+            ip_addr = resolve_domain_to_ip(hostname)
+            if ip_addr and ip_addr != hostname:
                 return f"{prefix}@{ip_addr}:{port}{fragment}"
             return config_str
+        
         return config_str
     except Exception:
         return config_str
 
 def get_country_from_hostname(hostname):
+    """Get country code from hostname."""
     if not hostname:
         return "XX"
-    ip_addr = resolve_domain_to_ip(hostname)
+    
+    # Resolve to IP first
+    if not is_ip_address(hostname):
+        ip_addr = resolve_domain_to_ip(hostname)
+    else:
+        ip_addr = hostname
+    
     if not ip_addr or not geoip_reader:
         return "XX"
+    
     try:
         return geoip_reader.country(ip_addr).country.iso_code or "XX"
     except Exception:
         return "XX"
 
 def get_config_attributes(config_str):
-    """Extract config attributes including flow."""
+    """Extract config attributes for categorization."""
     try:
-        flow = extract_flow_setting(config_str)
-        
         if config_str.startswith('vmess://'):
             vmess_data = parse_vmess_config(config_str)
             if not vmess_data:
@@ -612,26 +478,24 @@ def get_config_attributes(config_str):
         valid_protocols = ['vmess', 'vless', 'trojan', 'ss', 'hy2', 'hysteria', 'tuic', 'juicity']
         if not protocol or protocol not in valid_protocols:
             return None
+        
         valid_networks = ['tcp', 'kcp', 'ws', 'http', 'quic', 'grpc', 'h2', 'httpupgrade', 'splithttp']
         if not network or network not in valid_networks:
             network = 'tcp'
+        
         valid_security = ['none', 'tls', 'reality', 'xtls']
         if not security or security not in valid_security:
             security = 'none'
+        
         if not country or len(country) != 2 or not country.isalpha():
             country = 'XX'
         
-        return {
-            'protocol': protocol, 
-            'network': network, 
-            'security': security, 
-            'country': country,
-            'flow': flow
-        }
+        return {'protocol': protocol, 'network': network, 'security': security, 'country': country}
     except Exception:
         return None
 
 def rename_config(config_str, country_code):
+    """Rename config with country flag."""
     try:
         flag = country_code_to_flag(country_code)
         new_name = f"{flag} @MoboNetPC {flag}"
@@ -639,18 +503,23 @@ def rename_config(config_str, country_code):
     except Exception:
         return config_str
 
-# --- FS helpers ---
+# =========================
+# File System Helpers
+# =========================
+
 def setup_directories():
+    """Setup required directories."""
     import shutil
-    # FIXED: Removed unused 'subscribe' directory
     dirs = ['./splitted', './protocols', './networks', './countries', './security', './flow']
     for d in dirs:
         if os.path.exists(d):
             shutil.rmtree(d)
         os.makedirs(d)
+    ensure_database_dir()
     print("INFO: Directories ready.")
 
 def json_load_safe(path):
+    """Safely load JSON file."""
     try:
         with open(path, 'r', encoding='utf-8') as f:
             return json.load(f)
@@ -659,12 +528,14 @@ def json_load_safe(path):
         return []
 
 def find_configs_raw(text):
+    """Find config strings in text."""
     if not text:
         return []
     pattern = r'(?:vless|vmess|trojan|ss|hy2|hysteria|tuic|juicity)://[^\s<>"\'`]+'
     return re.findall(pattern, text, re.IGNORECASE)
 
 def check_host_port_with_socket(host_port):
+    """Check if host:port is reachable."""
     try:
         host, port_str = host_port.rsplit(':', 1)
         port = int(port_str)
@@ -674,11 +545,10 @@ def check_host_port_with_socket(host_port):
         return None
 
 def write_chunked_subscription_files(base_filepath, configs):
-    """Write configs to files in chunks, with proper path sanitization."""
-    # Prevent directory traversal
+    """Write configs to files in chunks."""
     base_filepath = base_filepath.replace('..', '_')
     
-    # Ensure we're not writing to .github or other sensitive directories
+    # Prevent writing to sensitive directories
     if '.github' in base_filepath or 'workflows' in base_filepath:
         print(f"WARNING: Skipping write to sensitive path: {base_filepath}")
         return
@@ -706,7 +576,7 @@ def write_chunked_subscription_files(base_filepath, configs):
             filepath = base_filepath
         else:
             filepath = os.path.join(
-                os.path.dirname(base_filepath), 
+                os.path.dirname(base_filepath),
                 f"{os.path.basename(base_filepath)}{i + 1}"
             )
         
@@ -717,8 +587,12 @@ def write_chunked_subscription_files(base_filepath, configs):
         except Exception as e:
             print(f"ERROR: Could not write file {filepath}: {e}")
 
-# --- TIER 1: DIRECT AGGREGATORS ---
+# =========================
+# Data Collection Functions
+# =========================
+
 def fetch_from_direct_aggregators():
+    """Fetch from direct aggregator sources."""
     print("\n--- [TIER 1] Direct Aggregators ---")
     configs = set()
     aggregators = [
@@ -752,12 +626,13 @@ def fetch_from_direct_aggregators():
     print(f"Collected {len(configs)} from aggregators")
     return configs
 
-# --- TIER 2: CODE SEARCH ---
 def fetch_from_github_code_search():
+    """Fetch from GitHub code search."""
     print("\n--- [TIER 2] GitHub Code Search ---")
     if not COLLECTOR_TOKEN:
         print("  ⚠ No token, skipping")
         return set()
+    
     configs = set()
     headers = {'Authorization': f'token {COLLECTOR_TOKEN}', 'Accept': 'application/vnd.github.v3.raw'}
     queries = [
@@ -773,6 +648,7 @@ def fetch_from_github_code_search():
         'size:>10000 "vmess://"', '"collector" "vmess"', '"aggregator" "v2ray"',
         '"xtls-rprx-vision"', '"flow=xtls-rprx-vision"', '"reality" "vision"',
     ]
+    
     query_count = 0
     for query in queries:
         if query_count >= 30:
@@ -810,14 +686,16 @@ def fetch_from_github_code_search():
     print(f"Collected {len(configs)} from code search")
     return configs
 
-# --- TIER 2: SMART REPO SEARCH ---
 def fetch_from_github_repos_smart():
+    """Fetch from GitHub repos."""
     print("\n--- [TIER 2] Smart Repo Search ---")
     if not COLLECTOR_TOKEN:
         return set()
+    
     configs = set()
     headers = {'Authorization': f'token {COLLECTOR_TOKEN}'}
     repo_queries = ['v2ray subscription', 'proxy subscription', 'v2ray collector']
+    
     for query in repo_queries[:2]:
         try:
             time.sleep(6)
@@ -827,6 +705,7 @@ def fetch_from_github_repos_smart():
                 continue
             repos = res.json().get('items', [])
             print(f"  '{query}': {len(repos)} repos")
+            
             for repo in repos:
                 try:
                     time.sleep(1)
@@ -837,12 +716,14 @@ def fetch_from_github_repos_smart():
                         continue
                     tree = tree_res.json().get('tree', [])
                     promising_files = []
+                    
                     for file_obj in tree:
                         path = file_obj.get('path', '')
                         if file_obj.get('type') == 'blob':
                             lower_path = path.lower()
                             if any(k in lower_path for k in ['sub', 'config', 'node', 'proxy', 'v2ray', 'all', 'merge']) and path.endswith(('.txt', '.yaml', '.yml')):
                                 promising_files.append(path)
+                    
                     for file_path in promising_files[:5]:
                         try:
                             time.sleep(0.5)
@@ -868,8 +749,8 @@ def fetch_from_github_repos_smart():
     print(f"Collected {len(configs)} from smart repo search")
     return configs
 
-# --- TIER 3: VALIDATED LINKS CACHE ---
 def load_validated_links():
+    """Load validated links from file."""
     try:
         with open(VALIDATED_LINKS_FILE, 'r') as f:
             return json.load(f)
@@ -877,6 +758,7 @@ def load_validated_links():
         return {}
 
 def save_validated_links(links_data):
+    """Save validated links to file."""
     try:
         with open(VALIDATED_LINKS_FILE, 'w') as f:
             json.dump(links_data, f, indent=2)
@@ -884,14 +766,16 @@ def save_validated_links(links_data):
         pass
 
 def fetch_and_validate_readme_links():
+    """Fetch from validated README links."""
     print("\n--- [TIER 3] README Links ---")
     if not COLLECTOR_TOKEN:
         return set()
+    
     configs = set()
-    headers = {'Authorization': f'token {COLLECTOR_TOKEN}'}
     validated_links = load_validated_links()
     print("  Testing cached links...")
     working_links = {}
+    
     for link, metadata in validated_links.items():
         try:
             response = requests.get(link, timeout=10)
@@ -903,13 +787,19 @@ def fetch_and_validate_readme_links():
             time.sleep(0.3)
         except:
             continue
+    
     save_validated_links(working_links)
     print(f"Collected {len(configs)} from validated links")
     return configs
 
-# --- PRE-FILTERING ---
+# =========================
+# Pre-filtering
+# =========================
+
 def pre_filter_live_hosts(all_configs):
+    """Pre-filter configs by checking host connectivity."""
     print(f"\n--- Pre-filtering {len(all_configs)} configs ---")
+    
     fingerprint_to_config = {}
     for config in all_configs:
         fp = get_config_fingerprint(config)
@@ -919,6 +809,7 @@ def pre_filter_live_hosts(all_configs):
     
     host_port_to_fingerprint = {}
     parse_errors = 0
+    
     for fp, config in fingerprint_to_config.items():
         try:
             if config.startswith('vmess://'):
@@ -934,19 +825,24 @@ def pre_filter_live_hosts(all_configs):
                 except:
                     parse_errors += 1
                     continue
+            
             if not host or not port:
                 continue
+            
             try:
                 port = int(port)
             except:
                 parse_errors += 1
                 continue
+            
             if port < 1 or port > 65535:
                 parse_errors += 1
                 continue
+            
             ip_addr = resolve_domain_to_ip(host)
             if not ip_addr:
                 continue
+            
             host_port_key = f"{ip_addr}:{port}"
             if host_port_key not in host_port_to_fingerprint:
                 host_port_to_fingerprint[host_port_key] = fp
@@ -960,6 +856,7 @@ def pre_filter_live_hosts(all_configs):
     
     live_host_ports = set()
     hosts_to_test = list(host_port_to_fingerprint.keys())
+    
     with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_PREFILTER_WORKERS) as executor:
         future_to_host = {executor.submit(check_host_port_with_socket, hp): hp for hp in hosts_to_test}
         for i, future in enumerate(concurrent.futures.as_completed(future_to_host)):
@@ -974,37 +871,46 @@ def pre_filter_live_hosts(all_configs):
     print(f"Pre-filter complete: {len(live_configs)} live configs")
     return live_configs
 
-# --- PROCESSING ---
-def process_and_convert_configs(configs):
+# =========================
+# Processing
+# =========================
+
+def process_configs(configs):
+    """Process configs: convert domain to IP, extract attributes, rename."""
     print(f"\n--- Processing {len(configs)} configs ---")
+    
     processed = []
     stats = {'converted': 0, 'failed_attrs': 0}
+    
     for config in configs:
+        # Convert domain to IP (if needed)
         ip_config = replace_domain_with_ip(config)
         if ip_config != config:
             stats['converted'] += 1
+        
+        # Get attributes
         attrs = get_config_attributes(ip_config)
         if not attrs:
             stats['failed_attrs'] += 1
             continue
+        
+        # Rename with country flag
         final_config = rename_config(ip_config, attrs['country'])
         processed.append({'config': final_config, 'attrs': attrs})
-    print(f"Converted {stats['converted']} to IP, failed {stats['failed_attrs']}")
+    
+    print(f"Converted {stats['converted']} domains to IP, failed to parse {stats['failed_attrs']}")
     return processed
 
-# --- MAIN EXECUTION ---
+# =========================
+# Main Execution
+# =========================
+
 def main():
     global geoip_reader
     
     print("DEBUG: main() function started")
     print(f"DEBUG: Current directory: {os.getcwd()}")
     print(f"DEBUG: COLLECTOR_TOKEN exists: {bool(COLLECTOR_TOKEN)}")
-    
-    try:
-        files_in_dir = os.listdir('.')
-        print(f"DEBUG: Files in directory ({len(files_in_dir)} total): {files_in_dir[:30]}")
-    except Exception as e:
-        print(f"ERROR listing directory: {e}")
     
     try:
         setup_directories()
@@ -1032,27 +938,12 @@ def main():
             except Exception as e:
                 print(f"Failed to download from {url}: {e}")
                 continue
-    else:
-        print(f"DEBUG: GeoIP database already exists ({os.path.getsize(db_path)} bytes)")
     
     try:
         geoip_reader = geoip2.database.Reader(db_path)
         print("DEBUG: GeoIP reader initialized")
     except Exception as e:
         print(f"Warning: GeoIP load failed: {e}")
-    
-    # === CLEANUP OLD DATABASE FILES ===
-    print(f"\n{'='*70}")
-    print(f"  DATABASE CLEANUP")
-    print(f"{'='*70}")
-    
-    try:
-        cleanup_old_database_files(DATABASE_SNI_BASE, keep_latest=MAX_DB_FILES_TO_KEEP)
-        cleanup_old_database_files(DATABASE_IP_BASE, keep_latest=MAX_DB_FILES_TO_KEEP)
-        print("DEBUG: Cleanup complete")
-    except Exception as e:
-        print(f"ERROR during cleanup: {e}")
-        traceback.print_exc()
     
     # Collect from all sources
     all_raw_configs = set()
@@ -1078,273 +969,117 @@ def main():
             continue
     print(f"✓ Local: {len(all_raw_configs)} configs")
     
-    print("DEBUG: About to fetch from aggregators...")
+    # Fetch from other sources
     try:
-        agg_configs = fetch_from_direct_aggregators()
-        all_raw_configs.update(agg_configs)
-        print(f"DEBUG: Aggregators returned {len(agg_configs)} configs")
+        all_raw_configs.update(fetch_from_direct_aggregators())
     except Exception as e:
         print(f"ERROR in aggregators: {e}")
-        traceback.print_exc()
     
-    print("DEBUG: About to fetch from code search...")
     try:
-        code_configs = fetch_from_github_code_search()
-        all_raw_configs.update(code_configs)
-        print(f"DEBUG: Code search returned {len(code_configs)} configs")
+        all_raw_configs.update(fetch_from_github_code_search())
     except Exception as e:
         print(f"ERROR in code search: {e}")
-        traceback.print_exc()
     
-    print("DEBUG: About to fetch from smart repos...")
     try:
-        repo_configs = fetch_from_github_repos_smart()
-        all_raw_configs.update(repo_configs)
-        print(f"DEBUG: Smart repos returned {len(repo_configs)} configs")
+        all_raw_configs.update(fetch_from_github_repos_smart())
     except Exception as e:
         print(f"ERROR in smart repos: {e}")
-        traceback.print_exc()
     
-    print("DEBUG: About to fetch from README links...")
     try:
-        readme_configs = fetch_and_validate_readme_links()
-        all_raw_configs.update(readme_configs)
-        print(f"DEBUG: README links returned {len(readme_configs)} configs")
+        all_raw_configs.update(fetch_and_validate_readme_links())
     except Exception as e:
         print(f"ERROR in README links: {e}")
-        traceback.print_exc()
     
     print(f"\n{'='*70}")
     print(f"  COLLECTION COMPLETE: {len(all_raw_configs)} raw configs")
     print(f"{'='*70}\n")
     
     if not all_raw_configs:
-        print("⚠️ No configs collected. This might be normal if nothing changed.")
-        print("DEBUG: Exiting normally with no changes")
+        print("⚠️ No configs collected. Exiting.")
         return
     
     # Pre-filter
-    print("DEBUG: Starting pre-filter...")
-    try:
-        live_configs = pre_filter_live_hosts(list(all_raw_configs))
-        print(f"DEBUG: Pre-filter complete, {len(live_configs)} live configs")
-    except Exception as e:
-        print(f"ERROR in pre-filter: {e}")
-        traceback.print_exc()
-        return
+    live_configs = pre_filter_live_hosts(list(all_raw_configs))
     
     if not live_configs:
         print("⚠️ No live configs after filtering.")
         return
     
-    # === PREMIUM CONFIG ANALYSIS ===
+    # Process configs
+    processed = process_configs(live_configs)
+    configs_in_order = [item['config'] for item in processed]
+    
+    # === DATABASE PROCESSING ===
     print(f"\n{'='*70}")
-    print(f"  PREMIUM CONFIG ANALYSIS (Flow Detection)")
+    print(f"  DATABASE PROCESSING")
     print(f"{'='*70}")
     
-    flow_stats = {'xtls-rprx-vision': 0, 'other_flow': 0, 'no_flow': 0}
-    security_stats = {'reality': 0, 'tls': 0, 'none': 0, 'other': 0}
+    db_all = load_all_databases()
+    print(f"Total historical configs across all databases: {len(db_all)}")
     
-    for config in live_configs:
-        flow = extract_flow_setting(config)
-        attrs = get_config_attributes(config)
+    new_configs = [c for c in configs_in_order if c not in db_all]
+    print(f"Found {len(new_configs)} NEW configs")
+    
+    if new_configs:
+        save_database(new_configs)
         
-        if flow:
-            if 'xtls-rprx-vision' in flow:
-                flow_stats['xtls-rprx-vision'] += 1
-            else:
-                flow_stats['other_flow'] += 1
-        else:
-            flow_stats['no_flow'] += 1
-        
-        if attrs:
-            sec = attrs.get('security', 'none').lower()
-            if sec == 'reality':
-                security_stats['reality'] += 1
-            elif sec == 'tls':
-                security_stats['tls'] += 1
-            elif sec == 'none':
-                security_stats['none'] += 1
-            else:
-                security_stats['other'] += 1
-    
-    print(f"  Flow Statistics:")
-    print(f"    • xtls-rprx-vision: {flow_stats['xtls-rprx-vision']}")
-    print(f"    • Other flow:       {flow_stats['other_flow']}")
-    print(f"    • No flow:          {flow_stats['no_flow']}")
-    print(f"  Security Statistics:")
-    print(f"    • Reality:          {security_stats['reality']}")
-    print(f"    • TLS:              {security_stats['tls']}")
-    print(f"    • None:             {security_stats['none']}")
-    print(f"    • Other:            {security_stats['other']}")
-    
-    # Filter premium configs
-    premium_configs, sorted_by_quality = filter_premium_configs(live_configs)
-    print(f"\n  🌟 PREMIUM CONFIGS FOUND: {len(premium_configs)}")
-    print(f"     (Reality/TLS + xtls-rprx-vision flow)")
-    
-    # === SNI DATABASE PROCESSING ===
-    print(f"\n{'='*70}")
-    print(f"  SNI DATABASE PROCESSING")
-    print(f"{'='*70}")
-    
-    db_sni_all = load_all_databases(DATABASE_SNI_BASE)
-    print(f"Total historical SNI configs across all databases: {len(db_sni_all)}")
-    
-    sni_configs_in_order = []
-    for cfg in live_configs:
-        sni_cfg = replace_address_with_sni(cfg)
-        attrs = get_config_attributes(sni_cfg)
-        if attrs:
-            sni_configs_in_order.append(rename_config(sni_cfg, attrs['country']))
-        else:
-            sni_configs_in_order.append(sni_cfg)
-    
-    sni_new = [c for c in sni_configs_in_order if c not in db_sni_all]
-    print(f"Found {len(sni_new)} NEW SNI configs")
-    
-    if sni_new:
-        saved_to = save_database_smart(DATABASE_SNI_BASE, sni_new)
-        
-        existing_active_sni = load_list_from_file(ACTIVE_FILE_SNI) or []
-        active_sni_merged = merge_active_by_fingerprint(existing_active_sni, sni_new)
-        saved_count = save_active_file(ACTIVE_FILE_SNI, active_sni_merged)
-        print(f"  ✅ Saved {saved_count} to {ACTIVE_FILE_SNI} (accumulated)")
+        existing_active = load_active_file()
+        merged_active = merge_configs_by_fingerprint(existing_active, new_configs)
+        saved_count = save_active_file(merged_active)
+        print(f"  ✅ Saved {saved_count} to {ACTIVE_FILE}")
     else:
-        print("  ℹ️  No new SNI configs this run (active file unchanged)")
-    
-    # === IP DATABASE PROCESSING ===
-    print(f"\n{'='*70}")
-    print(f"  IP DATABASE PROCESSING")
-    print(f"{'='*70}")
-    
-    db_ip_all = load_all_databases(DATABASE_IP_BASE)
-    print(f"Total historical IP configs across all databases: {len(db_ip_all)}")
-    
-    processed = process_and_convert_configs(live_configs)
-    ip_configs_in_order = [item['config'] for item in processed]
-    
-    ip_new = [c for c in ip_configs_in_order if c not in db_ip_all]
-    print(f"Found {len(ip_new)} NEW IP configs")
-    
-    if ip_new:
-        saved_to = save_database_smart(DATABASE_IP_BASE, ip_new)
-        
-        existing_active_ip = load_list_from_file(ACTIVE_FILE_IP) or []
-        active_ip_merged = merge_active_by_fingerprint(existing_active_ip, ip_new)
-        saved_count = save_active_file(ACTIVE_FILE_IP, active_ip_merged)
-        print(f"  ✅ Saved {saved_count} to {ACTIVE_FILE_IP} (accumulated)")
-    else:
-        print("  ℹ️  No new IP configs this run (active file unchanged)")
-    
-    # === PREMIUM CONFIG FILE ===
-    print(f"\n{'='*70}")
-    print(f"  PREMIUM CONFIGS (Best for Iran)")
-    print(f"{'='*70}")
-    
-    if premium_configs:
-        premium_processed = []
-        for cfg in premium_configs:
-            ip_cfg = replace_domain_with_ip(cfg)
-            attrs = get_config_attributes(ip_cfg)
-            if attrs:
-                premium_processed.append(rename_config(ip_cfg, attrs['country']))
-            else:
-                premium_processed.append(ip_cfg)
-        
-        existing_premium = load_list_from_file(PREMIUM_FILE) or []
-        merged_premium = merge_active_by_fingerprint(existing_premium, premium_processed, MAX_PREMIUM_CONFIGS)
-        saved_count = save_active_file(PREMIUM_FILE, merged_premium, MAX_PREMIUM_CONFIGS)
-        print(f"  ✅ Saved {saved_count} premium configs to {PREMIUM_FILE}")
-        
-        with open('premium_plain.txt', 'w', encoding='utf-8') as f:
-            f.write('\n'.join(merged_premium[:100]))
-        print(f"  ✅ Saved top 100 premium configs to premium_plain.txt (plain text)")
-    else:
-        print("  ⚠️  No premium configs found this run")
+        print("  ℹ️  No new configs this run")
     
     # === CATEGORIZATION ===
     print(f"\n{'='*70}")
     print(f"  CATEGORIZATION")
     print(f"{'='*70}")
     
-    by_protocol, by_network, by_security, by_country, by_flow = {}, {}, {}, {}, {}
+    by_protocol, by_network, by_security, by_country = {}, {}, {}, {}
+    
     for item in processed:
         config, attrs = item['config'], item['attrs']
         by_protocol.setdefault(attrs['protocol'], []).append(config)
         by_network.setdefault(attrs['network'], []).append(config)
         by_security.setdefault(attrs['security'], []).append(config)
         by_country.setdefault(attrs['country'].lower(), []).append(config)
-        
-        flow = attrs.get('flow')
-        if flow:
-            flow_key = sanitize_filename(flow)
-            by_flow.setdefault(flow_key, []).append(config)
     
-    # Write categorized files
     print("  Writing categorized files...")
     
-    try:
-        for proto, configs in by_protocol.items():
-            write_chunked_subscription_files(f'./protocols/{sanitize_filename(proto)}', configs)
-    except Exception as e:
-        print(f"  ERROR writing protocol files: {e}")
+    for proto, cfgs in by_protocol.items():
+        write_chunked_subscription_files(f'./protocols/{sanitize_filename(proto)}', cfgs)
     
-    try:
-        for net, configs in by_network.items():
-            write_chunked_subscription_files(f'./networks/{sanitize_filename(net)}', configs)
-    except Exception as e:
-        print(f"  ERROR writing network files: {e}")
+    for net, cfgs in by_network.items():
+        write_chunked_subscription_files(f'./networks/{sanitize_filename(net)}', cfgs)
     
-    try:
-        for sec, configs in by_security.items():
-            write_chunked_subscription_files(f'./security/{sanitize_filename(sec)}', configs)
-    except Exception as e:
-        print(f"  ERROR writing security files: {e}")
+    for sec, cfgs in by_security.items():
+        write_chunked_subscription_files(f'./security/{sanitize_filename(sec)}', cfgs)
     
-    try:
-        for country, configs in by_country.items():
-            write_chunked_subscription_files(f'./countries/{sanitize_filename(country)}', configs)
-    except Exception as e:
-        print(f"  ERROR writing country files: {e}")
+    for country, cfgs in by_country.items():
+        write_chunked_subscription_files(f'./countries/{sanitize_filename(country)}', cfgs)
     
-    try:
-        for flow_name, configs in by_flow.items():
-            write_chunked_subscription_files(f'./flow/{flow_name}', configs)
-    except Exception as e:
-        print(f"  ERROR writing flow files: {e}")
-    
-    try:
-        all_final = [item['config'] for item in processed]
-        write_chunked_subscription_files('./splitted/mixed', all_final)
-    except Exception as e:
-        print(f"  ERROR writing mixed file: {e}")
+    write_chunked_subscription_files('./splitted/mixed', configs_in_order)
     
     # Final summary
     print(f"\n{'='*70}")
     print(f"  FINAL SUMMARY")
     print(f"{'='*70}")
-    print(f"  Raw collected          : {len(all_raw_configs)}")
-    print(f"  Live filtered          : {len(live_configs)}")
-    print(f"  🌟 Premium (vision+reality): {len(premium_configs)}")
-    print(f"  SNI DB total (all)     : {len(db_sni_all)}")
-    print(f"  IP  DB total (all)     : {len(db_ip_all)}")
-    print(f"  Active SNI (current)   : {len(load_list_from_file(ACTIVE_FILE_SNI))}")
-    print(f"  Active IP (current)    : {len(load_list_from_file(ACTIVE_FILE_IP))}")
-    print(f"  Active Premium         : {len(load_list_from_file(PREMIUM_FILE))}")
-    print(f"  SNI DB files           : {', '.join(get_database_files(DATABASE_SNI_BASE)) or 'None'}")
-    print(f"  IP  DB files           : {', '.join(get_database_files(DATABASE_IP_BASE)) or 'None'}")
-    print(f"  Protocol groups        : {len(by_protocol)}")
-    print(f"  Network groups         : {len(by_network)}")
-    print(f"  Security groups        : {len(by_security)}")
-    print(f"  Flow groups            : {len(by_flow)}")
-    print(f"  Country groups         : {len(by_country)}")
+    print(f"  Raw collected        : {len(all_raw_configs)}")
+    print(f"  Live filtered        : {len(live_configs)}")
+    print(f"  Processed            : {len(processed)}")
+    print(f"  New configs          : {len(new_configs)}")
+    print(f"  Database files       : {len(get_database_files())}")
+    print(f"  Active configs       : {len(load_active_file())}")
+    print(f"  Protocol groups      : {len(by_protocol)}")
+    print(f"  Network groups       : {len(by_network)}")
+    print(f"  Security groups      : {len(by_security)}")
+    print(f"  Country groups       : {len(by_country)}")
     print(f"{'='*70}")
-    print("\n✓ COLLECTION COMPLETE - Databases & Active Files Updated!")
+    print("\n✓ COLLECTION COMPLETE!")
 
 
 if __name__ == "__main__":
-    print("DEBUG: __name__ == '__main__' block reached")
+    print("DEBUG: Script starting")
     try:
         main()
         print("DEBUG: main() completed successfully")
@@ -1354,5 +1089,4 @@ if __name__ == "__main__":
         print(f"Error message: {e}")
         traceback.print_exc()
         exit(1)
-    
     print("DEBUG: Script ending normally")
