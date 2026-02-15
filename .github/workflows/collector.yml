@@ -2,7 +2,7 @@ name: Run V2Ray Collector
 
 on:
   schedule:
-    - cron: '0 */4 * * *'  # Every 4 hours
+    - cron: '0 */4 * * *'
   workflow_dispatch:
 
 jobs:
@@ -42,12 +42,7 @@ jobs:
 
       - name: Commit and push changes
         run: |
-          # ============================================================
-          # CRITICAL FIX: Ensure .github directory is NEVER modified
-          # This prevents the "workflows permission" error
-          # ============================================================
-          
-          # Restore any changes to .github directory from HEAD
+          # Restore .github directory to prevent workflow permission errors
           git checkout HEAD -- .github/ 2>/dev/null || true
           
           # Fetch latest remote state
@@ -58,68 +53,44 @@ jobs:
           REMOTE=$(git rev-parse origin/main)
           
           if [ "$LOCAL" != "$REMOTE" ]; then
-            echo "⚠️ Local is different from remote, syncing..."
-            # Reset to remote, keeping working directory
+            echo "⚠️ Local differs from remote, syncing..."
             git reset origin/main
           fi
           
-          # ============================================================
           # Stage ONLY files that main.py generates
-          # NEVER use 'git add -A' or 'git add .'
-          # ============================================================
-          
-          # Active config files
-          git add filtered-for-refiner.txt 2>/dev/null || true
-          git add latest_ip_configs.txt 2>/dev/null || true
-          git add premium_configs.txt 2>/dev/null || true
-          git add premium_plain.txt 2>/dev/null || true
-          
-          # Database files (may have numbered suffixes)
-          git add database_sni*.txt 2>/dev/null || true
-          git add database_ip*.txt 2>/dev/null || true
-          
-          # Validated links cache
+          git add latest_configs.txt 2>/dev/null || true
+          git add database/ 2>/dev/null || true
           git add validated_subscriptions.json 2>/dev/null || true
-          
-          # Categorized subscription directories
           git add splitted/ 2>/dev/null || true
           git add protocols/ 2>/dev/null || true
           git add networks/ 2>/dev/null || true
           git add countries/ 2>/dev/null || true
           git add security/ 2>/dev/null || true
-          git add flow/ 2>/dev/null || true
           
-          # ============================================================
-          # SAFETY: Explicitly unstage any .github changes
-          # ============================================================
+          # Safety: Unstage any .github changes
           git reset HEAD -- .github/ 2>/dev/null || true
           
-          # Check if there are actually changes to commit
+          # Check if there are changes to commit
           if git diff --cached --quiet; then
             echo "ℹ️ No changes to commit"
             exit 0
           fi
           
-          # Show what will be committed (for debugging)
+          # Show what will be committed
           echo "📋 Files to be committed:"
           git diff --cached --name-only
           
-          # Double-check no workflow files are staged
+          # Verify no workflow files are staged
           if git diff --cached --name-only | grep -q "^\.github/"; then
-            echo "❌ ERROR: .github files detected in staging! Aborting."
-            git reset HEAD -- .github/
-            # Re-check
-            if git diff --cached --name-only | grep -q "^\.github/"; then
-              echo "❌ CRITICAL: Could not unstage .github files. Aborting."
-              exit 1
-            fi
+            echo "❌ ERROR: .github files in staging! Aborting."
+            exit 1
           fi
           
-          # Commit with timestamp
+          # Commit
           TIMESTAMP=$(date -u +'%Y-%m-%d %H:%M UTC')
           git commit -m "✅ Automated Update ${TIMESTAMP}"
           
-          # Push with retry logic (3 attempts)
+          # Push with retry
           for attempt in 1 2 3; do
             echo "Push attempt ${attempt}/3..."
             
@@ -129,34 +100,18 @@ jobs:
             else
               echo "⚠️ Push failed, waiting 10 seconds..."
               sleep 10
-              
-              # Re-sync before retry
               git fetch origin main
               
-              # Try to rebase our changes on top of remote
               if git rebase origin/main; then
                 echo "✅ Rebase successful"
               else
-                echo "⚠️ Rebase failed, using reset strategy..."
                 git rebase --abort 2>/dev/null || true
-                
-                # Reset to remote
                 git reset origin/main
                 
-                # Re-stage only our files
-                git add filtered-for-refiner.txt 2>/dev/null || true
-                git add latest_ip_configs.txt 2>/dev/null || true
-                git add premium_configs.txt 2>/dev/null || true
-                git add premium_plain.txt 2>/dev/null || true
-                git add database_sni*.txt 2>/dev/null || true
-                git add database_ip*.txt 2>/dev/null || true
-                git add validated_subscriptions.json 2>/dev/null || true
-                git add splitted/ protocols/ networks/ countries/ security/ flow/ 2>/dev/null || true
-                
-                # SAFETY: Unstage .github again
+                git add latest_configs.txt database/ validated_subscriptions.json 2>/dev/null || true
+                git add splitted/ protocols/ networks/ countries/ security/ 2>/dev/null || true
                 git reset HEAD -- .github/ 2>/dev/null || true
                 
-                # Check if anything to commit
                 if ! git diff --cached --quiet; then
                   git commit -m "✅ Automated Update ${TIMESTAMP} [retry ${attempt}]"
                 fi
