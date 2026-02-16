@@ -16,7 +16,7 @@ SOURCES = [
 OUTPUT_DIR = 'Hugs'
 OUTPUT_FILES = ['Pre-Hugs-1.txt', 'Pre-Hugs-2.txt', 'Pre-Hugs-3.txt', 'Pre-Hugs-4.txt']
 CF_OUTPUT_FILE = 'CF-Configs.txt'
-CF_MAX_CONFIGS = 4444
+CF_MAX_CONFIGS = 2222
 COUNTER_FILE = '.rotation_counter'
 
 # Blacklisted patterns (will be excluded)
