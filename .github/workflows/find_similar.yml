@@ -1,0 +1,61 @@
+name: Find Similar Configs
+
+on:
+  workflow_dispatch:
+    inputs:
+      protocol:
+        description: 'Protocol (vless, vmess, trojan, ss)'
+        required: false
+        default: 'vless'
+      address:
+        description: 'Address / hostname'
+        required: false
+        default: ''
+      port:
+        description: 'Port (e.g., 2052)'
+        required: false
+        default: ''
+      uuid:
+        description: 'UUID (full UUID string)'
+        required: false
+        default: ''
+      network:
+        description: 'Network type (ws, tcp, grpc, etc.)'
+        required: false
+        default: ''
+      path:
+        description: 'Path (e.g., /?ed=2056)'
+        required: false
+        default: ''
+      host:
+        description: 'Host header (e.g., bot.zahedimobile.ir)'
+        required: false
+        default: ''
+      security:
+        description: 'Security (none, tls)'
+        required: false
+        default: 'none'
+
+jobs:
+  find:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      - name: Run finder script
+        run: python scripts/find_similar.py
+        env:
+          MATCH_PROTOCOL: ${{ github.event.inputs.protocol }}
+          MATCH_ADDRESS: ${{ github.event.inputs.address }}
+          MATCH_PORT: ${{ github.event.inputs.port }}
+          MATCH_UUID: ${{ github.event.inputs.uuid }}
+          MATCH_NETWORK: ${{ github.event.inputs.network }}
+          MATCH_PATH: ${{ github.event.inputs.path }}
+          MATCH_HOST: ${{ github.event.inputs.host }}
+          MATCH_SECURITY: ${{ github.event.inputs.security }}
