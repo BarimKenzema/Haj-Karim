@@ -1,25 +1,15 @@
 #!/usr/bin/env python3
 """
-Find VLESS/VMess/Trojan/SS configs from Haj‑Karim databases that match
-user‑supplied criteria (protocol, address, port, UUID, network, path, host, security).
-
-Usage:
-  Set environment variables MATCH_PROTOCOL, MATCH_ADDRESS, MATCH_PORT,
-  MATCH_UUID, MATCH_NETWORK, MATCH_PATH, MATCH_HOST, MATCH_SECURITY.
-  Any variable left empty/unset will be ignored in the match.
+Find VLESS/VMess/Trojan/SS configs from Haj‑Karim databases.
+Matches user‑supplied criteria from environment variables.
+Now handles base64-encoded database files.
 """
 
-import json
-import os
-import re
-import sys
-import base64
-import urllib.request
-import urllib.error
+import os, re, sys, json, base64, urllib.request, urllib.error
 from urllib.parse import urlparse, parse_qs, unquote
 
 # ---------------------------------------------------------------------------
-# Database URLs — always the same, but you can edit this list if needed.
+# Database URLs – same list you provided
 # ---------------------------------------------------------------------------
 DATABASE_URLS = [
     "https://raw.githubusercontent.com/BarimKenzema/Haj-Karim/refs/heads/main/database/Database_1.txt",
@@ -33,20 +23,40 @@ DATABASE_URLS = [
 ]
 
 # ---------------------------------------------------------------------------
-# Parse a share‑link into a dict of fields
+# Helper: fetch and decode a database URL
+# ---------------------------------------------------------------------------
+def fetch_and_decode(url: str):
+    """Download URL, try base64 decode, fallback to plain text.
+    Returns list of non‑empty stripped lines."""
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "GitHub-Action/1.0"})
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            raw = resp.read()
+    except urllib.error.URLError as e:
+        print(f"[WARN] Failed to fetch {url}: {e}", file=sys.stderr)
+        return []
+
+    # Try base64 decoding the whole blob
+    try:
+        decoded_bytes = base64.b64decode(raw)
+        text = decoded_bytes.decode("utf-8", errors="ignore")
+    except Exception:
+        # Not base64, treat as plain text
+        text = raw.decode("utf-8", errors="ignore")
+
+    lines = [line.strip() for line in text.splitlines() if line.strip() and not line.strip().startswith("#")]
+    return lines
+
+# ---------------------------------------------------------------------------
+# Parse a share‑link into a dict
 # ---------------------------------------------------------------------------
 def parse_share_link(link: str):
-    """Return a dict with keys protocol, address, port, uuid, password,
-    network, path, host, security, remarks.  Empty dict on failure."""
-    if not link or "://" not in link:
+    if "://" not in link:
         return {}
-
     proto, rest = link.split("://", 1)
     out = {"protocol": proto}
 
-    # --- VLESS ---
     if proto == "vless":
-        # vless://uuid@address:port?params#remark
         m = re.match(r"([^@]+)@([^:]+):(\d+)(\?.*)?(#.*)?$", rest)
         if m:
             out["uuid"] = m.group(1)
@@ -62,10 +72,8 @@ def parse_share_link(link: str):
             out["remarks"] = unquote(frag) if frag else ""
         return out
 
-    # --- VMess (base64 JSON) ---
     if proto == "vmess":
         try:
-            # Ensure padding
             padded = rest + "=" * (len(rest) % 4)
             j = json.loads(base64.b64decode(padded))
             out["uuid"] = j.get("id")
@@ -80,9 +88,7 @@ def parse_share_link(link: str):
             pass
         return out
 
-    # --- Trojan ---
     if proto == "trojan":
-        # trojan://password@address:port?params#remark
         m = re.match(r"([^@]+)@([^:]+):(\d+)(\?.*)?(#.*)?$", rest)
         if m:
             out["password"] = m.group(1)
@@ -98,9 +104,7 @@ def parse_share_link(link: str):
             out["remarks"] = unquote(frag) if frag else ""
         return out
 
-    # --- Shadowsocks (SIP002) ---
     if proto == "ss":
-        # ss://base64(method:password)@address:port#remark
         m = re.match(r"([^@]+)@([^:]+):(\d+)(#.*)?$", rest)
         if m:
             out["address"] = m.group(2)
@@ -111,19 +115,18 @@ def parse_share_link(link: str):
 
     return out
 
-
-def matches_criteria(parsed: dict, criteria: dict):
-    """Return True if parsed config matches all non‑empty criteria."""
+# ---------------------------------------------------------------------------
+# Matching logic
+# ---------------------------------------------------------------------------
+def matches_criteria(parsed, criteria):
     for key, want in criteria.items():
-        if not want:          # empty string → ignore this criterion
+        if not want:          # skip if not set
             continue
         if parsed.get(key) != want:
             return False
     return True
 
-
 def main():
-    # Read criteria from environment variables
     criteria = {
         "protocol": os.environ.get("MATCH_PROTOCOL", "").strip(),
         "address": os.environ.get("MATCH_ADDRESS", "").strip(),
@@ -139,18 +142,8 @@ def main():
     matches = []
 
     for url in DATABASE_URLS:
-        try:
-            req = urllib.request.Request(url, headers={"User-Agent": "GitHub-Action/1.0"})
-            with urllib.request.urlopen(req, timeout=30) as resp:
-                text = resp.read().decode("utf-8", errors="ignore")
-        except urllib.error.URLError as e:
-            print(f"[WARN] Failed to fetch {url}: {e}", file=sys.stderr)
-            continue
-
-        for line in text.splitlines():
-            line = line.strip()
-            if not line or line.startswith("#"):
-                continue
+        lines = fetch_and_decode(url)
+        for line in lines:
             parsed = parse_share_link(line)
             if not parsed:
                 continue
@@ -163,7 +156,6 @@ def main():
     for m in matches:
         print(m)
     print(f"\nTotal: {len(matches)}")
-
 
 if __name__ == "__main__":
     main()
