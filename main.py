@@ -498,7 +498,7 @@ def rename_config(config_str, country_code):
     """Rename config with country flag."""
     try:
         flag = country_code_to_flag(country_code)
-        new_name = f"{flag} @MoboNetPC {flag}"
+        new_name = f"{flag} @VPTsupport {flag}"
         return f"{config_str.split('#')[0]}#{quote(new_name)}"
     except Exception:
         return config_str
